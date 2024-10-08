@@ -22,6 +22,7 @@ class LookupController extends AbstractController
         // Extract parameters from the query string
         $command = $request->query->get('command');
         $argument = $request->query->get('argument');
+        
         // Check if command and argument are provided
         if (!$command || !$argument) {
             return new JsonResponse(['error' => 'Missing command or argument'], 400);
