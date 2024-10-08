@@ -5,6 +5,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Routing\Annotation\Route;
 use App\Service\MailServerVerificationService;
+use Symfony\Component\HttpFoundation\Request;
 
 class LookupController extends AbstractController
 {
@@ -15,23 +16,33 @@ class LookupController extends AbstractController
         $this->mailServerVerification = $mailServerVerification;
     }
 
-    #[Route('/api/v1/lookup/{protocol}/{domain}', methods: ['GET'])]
-    public function lookup(string $protocol, string $domain): JsonResponse
+    #[Route('/api/v1/lookup', methods: ['GET'])]
+    public function lookup(Request $request): JsonResponse
     {
+        // Extract parameters from the query string
+        $command = $request->query->get('command');
+        $argument = $request->query->get('argument');
+
+        // Check if command and argument are provided
+        if (!$command || !$argument) {
+            return new JsonResponse(['error' => 'Missing command or argument'], 400);
+        }
+
+        // Initialize response variable
         $response = [];
 
-        switch ($protocol) {
+        switch ($command) {
             case 'spf':
-                $response['spf'] = $this->mailServerVerification->checkSPF($domain);
+                $response = $this->mailServerVerification->checkSPF($argument);
                 break;
             case 'dkim':
-                $response['dkim'] = $this->mailServerVerification->checkDKIM($domain);
+                $response = $this->mailServerVerification->checkDKIM($argument);
                 break;
             case 'dmarc':
-                $response['dmarc'] = $this->mailServerVerification->checkDMARC($domain);
+                $response = $this->mailServerVerification->checkDMARC($argument);
                 break;
             default:
-                return new JsonResponse(['error' => 'Invalid protocol'], 400);
+                return new JsonResponse(['error' => 'Invalid command'], 400);
         }
 
         return new JsonResponse($response);
