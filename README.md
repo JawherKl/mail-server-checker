@@ -9,7 +9,7 @@ The **Mail Server Checker** is a PHP-based tool designed to analyze and verify t
 - Clean and structured output for easy readability.
 
 ## Requirements
-- PHP 7.4 or higher
+- PHP 7.4 or higher version
 - Composer
 
 ## Installation
