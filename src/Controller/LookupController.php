@@ -36,7 +36,20 @@ class LookupController extends AbstractController
                 $response = $this->mailServerVerification->checkSPF($argument);
                 break;
             case 'dkim':
-                $response = $this->mailServerVerification->checkDKIM($argument);
+                // For DKIM, the argument should be in the format domain:selector
+                // Split the argument into domain and selector
+                $parts = explode(':', $argument);
+    
+                // Check if both domain and selector are provided
+                if (count($parts) !== 2) {
+                    return new JsonResponse(['error' => 'Invalid DKIM argument format. Expected format: domain:selector'], 400);
+                }
+    
+                $domain = $parts[0];
+                $selector = $parts[1];
+    
+                // Perform the DKIM check
+                $response = $this->mailServerVerification->checkDKIM($domain, $selector);
                 break;
             case 'dmarc':
                 $response = $this->mailServerVerification->checkDMARC($argument);
