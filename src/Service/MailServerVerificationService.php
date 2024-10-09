@@ -12,8 +12,10 @@ use Iodev\Whois\Factory;
 use League\Uri\Components\Query;
 use League\Uri\Modifier;
 use League\Uri\Uri;
-
+use Mika56\SPFCheck\DNS\DNSRecordGetter;
+use Mika56\SPFCheck\SPFCheck;
 use Spatie\Dns\Dns;
+use SPFLib\Checker;
 
 class MailServerVerificationService
 {
@@ -60,19 +62,25 @@ class MailServerVerificationService
             "TimeRecorded" => (new \DateTime())->format(\DateTime::ATOM),
             "ReportingNameServer" => $reportingNameServer,
             "TimeToComplete" => round($timeToComplete, 2),
-            "Failed" => $this->getFailedChecks($spfData, $domain),//
-            "Warnings" => $this->getWarningsChecks($spfData),//
+            "RelatedIP" => $this->getRelatedIP($domain),
+            "ResourceRecordType" => 16,
+            "IsEmptySubDomain" => $this->getIsEmptySubDomain($domain),
+            "IsEndpoint" => $this->getIsEndpoint($domain),
+            "HasSubscriptions" => $this->getHasSubscriptions($domain),
+            "AlertgroupSubscriptionsId" => $this->getAlertgroupSubscriptionsId($domain),//
+            "Failed" => $this->getFailedChecks($spfData, $domain),
+            "Warnings" => $this->getWarningsChecks($spfData),
             "Passed" => $this->getPassedChecks($spfData),
             "Timeouts" => $timeout,
             "Errors" => $errorMessage,
             "IsError" => $isError,
             "Information" => $this->getSpfInfo($spfData),
-            "MultiInformation" => [],
+            "MultiInformation" => $this->getMultiSpfInfo($spfData),//
             "Transcript" => $this->generateSpfTranscript($domain, $spfData, $dnsLookupResults),
-            "MxRep" => 0,
+            "MxRep" => 0,//
             "EmailServiceProvider" => $this->getSpfInfoMxToolbox($domain),
-            "DnsServiceProvider" => null,
-            "DnsServiceProviderIdentifier" => null,
+            "DnsServiceProvider" => $this->getDnsServiceProvider($domain),//
+            "DnsServiceProviderIdentifier" => $this->getDnsServiceProviderIdentifier($domain),//
             "RelatedLookups" => $this->getDnsLookup($domain)
         ];
         //var_dump($this->checkSpfSyntax($domain));
@@ -80,6 +88,8 @@ class MailServerVerificationService
         //var_dump($this->getDomainHttpsInfo($domain));
         //var_dump($this->getRecords($domain));
         //var_dump($this->getDnsPhpChecks($domain));
+        //var_dump($this->getcheckSpfLib($spfData, $domain));
+        //var_dump($this->getSpfCheckLib($spfData, $domain));
         return $response;
     }
 
@@ -95,6 +105,89 @@ class MailServerVerificationService
             return $reportingDomain !== $ipAddress ? $reportingDomain : $ipAddress;
         }
         return "No nameserver found";
+    }
+
+    private function getRelatedIP(string $domain): ?string
+    {
+        // Perform a DNS lookup to get A or AAAA records (IPv4 or IPv6 addresses)
+        $dnsRecords = dns_get_record($domain, DNS_A | DNS_AAAA);
+        
+        $ips = [];
+        foreach ($dnsRecords as $record) {
+            if (isset($record['ip'])) {
+                $ips[] = $record['ip']; // Get IPv4 address
+            } elseif (isset($record['ipv6'])) {
+                $ips[] = $record['ipv6']; // Get IPv6 address
+            }
+        }
+
+        // Return null if no IPs found, otherwise return a comma-separated list of IPs
+        return !empty($ips) ? implode(', ', $ips) : null;
+    }
+
+    private function getIsEmptySubDomain(string $domain): bool
+    {
+        // Check if this domain is a subdomain
+        $isSubdomain = (substr_count($domain, '.') > 1);
+
+        // Perform a DNS lookup to check if there are any A, AAAA, or MX records
+        $dnsRecords = dns_get_record($domain, DNS_A | DNS_AAAA | DNS_MX);
+
+        // If it's a subdomain and has no records, consider it an empty subdomain
+        return $isSubdomain && empty($dnsRecords);
+    }
+
+    private function getIsEndpoint(string $domain): bool
+    {
+        // Fetch the SPF record for the domain
+        $spfRecord = dns_get_record($domain, DNS_TXT);
+
+        // Search for SPF in the TXT records
+        foreach ($spfRecord as $record) {
+            if (strpos($record['txt'], 'v=spf1') === 0) {
+                // Check if the record ends with '-all', which indicates an endpoint
+                return strpos($record['txt'], '-all') !== false;
+            }
+        }
+
+        return false;
+    }
+
+    private function getHasSubscriptions(string $domain): bool
+    {
+        // Fetch the SPF record for the domain
+        $spfRecord = dns_get_record($domain, DNS_TXT);
+
+        // Search for SPF in the TXT records
+        foreach ($spfRecord as $record) {
+            if (strpos($record['txt'], 'v=spf1') === 0) {
+                // Check if the SPF record contains the "include:" directive, indicating a subscription
+                return strpos($record['txt'], 'include:') !== false;
+            }
+        }
+
+        return false;
+    }
+
+    private function getAlertgroupSubscriptionsId(string $domain): ?int
+    {
+        // Example logic: this would be a query to a database in a real-world scenario
+        // You could check if the domain is subscribed to any alert groups
+
+        // For now, return null as we don't have an actual data source for alert subscriptions
+        return null;
+    }
+
+    private function getMultiSpfInfo(string $spfRecord) {
+        return [];
+    }
+
+    private function getDnsServiceProvider(string $spfRecord) {
+        return null;
+    }
+
+    private function getDnsServiceProviderIdentifier(string $spfRecord) {
+        return null;
     }
 
     private function getDnsPhpChecks($domain) {
@@ -235,13 +328,15 @@ class MailServerVerificationService
         $spfCount = count($spfRecords);
 
         // Check for SPF Record Published
-        $passedChecks[] = [
-            "ID" => 361,
-            "Name" => "SPF Record Published",
-            "Info" => "SPF Record found",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        if ($spfCount > 0) {
+            $passedChecks[] = [
+                "ID" => 361,
+                "Name" => "SPF Record Published",
+                "Info" => "SPF Record found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
+        }
 
         // Check for deprecated records
         $deprecatedFound = false;
@@ -251,100 +346,140 @@ class MailServerVerificationService
                 break;
             }
         }
+        if ($deprecatedFound) {
+            $passedChecks[] = [
+                "ID" => 355,
+                "Name" => "SPF Record Deprecated",
+                "Info" => $deprecatedFound ? "Deprecated records found" : "No deprecated records found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
 
-        $passedChecks[] = [
-            "ID" => 355,
-            "Name" => "SPF Record Deprecated",
-            "Info" => $deprecatedFound ? "Deprecated records found" : "No deprecated records found",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
-
-        // Check for multiple records
-        $passedChecks[] = [
-            "ID" => 358,
-            "Name" => "SPF Multiple Records",
-            "Info" => $spfCount < 2 ? "Less than two records found" : "Multiple records found",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+            // Check for multiple records
+            $passedChecks[] = [
+                "ID" => 358,
+                "Name" => "SPF Multiple Records",
+                "Info" => $spfCount < 2 ? "Less than two records found" : "Multiple records found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+                //"Result" => $spfCount < 2 ? "pass" : "fail",
+            ];
+        }
 
         // Check for characters after ALL
         $allCheck = !preg_match('/\s+\S/', trim(substr($spfData, strrpos($spfData, '-all'))));
-        $passedChecks[] = [
-            "ID" => 477,
-            "Name" => "SPF Contains characters after ALL",
-            "Info" => $allCheck ? "No items after 'ALL'." : "Items found after 'ALL'.",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        if ($allCheck) {
+            $passedChecks[] = [
+                "ID" => 477,
+                "Name" => "SPF Contains characters after ALL",
+                "Info" => $allCheck ? "No items after 'ALL'." : "Items found after 'ALL'.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];   
+        }
 
         // Check for SPF Syntax
         $isValid = $this->isValidSpfSyntax($spfData); // Assume you have a function to check SPF syntax
-        $passedChecks[] = [
-            "ID" => 356,
-            "Name" => "SPF Syntax Check",
-            "Info" => $isValid ? "The record is valid" : "The record contains syntax errors",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        if ($isValid) {
+            $passedChecks[] = [
+                "ID" => 356,
+                "Name" => "SPF Syntax Check",
+                "Info" => $isValid ? "The record is valid" : "The record contains syntax errors",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
+        }
 
         // Check for included lookups (maximum 10)
         $includedLookups = array_filter($spfRecords, function ($record) {
             return $record['Type'] === 'include';
         });
-        $passedChecks[] = [
-            "ID" => 421,
-            "Name" => "SPF Included Lookups",
-            "Info" => count($includedLookups) <= 10 ? "Number of included lookups is OK" : "Too many included lookups",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        if ($includedLookups <= 10) {
+            $passedChecks[] = [
+                "ID" => 421,
+                "Name" => "SPF Included Lookups",
+                "Info" => count($includedLookups) <= 10 ? "Number of included lookups is OK" : "Too many included lookups",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+                //"Result" => count($includedLookups) <= 10 ? "pass" : "warning",
+            ];
+        }
 
         // Check for type PTR
         $ptrCheck = true; // Assume you have logic to determine if PTR records are found
-        $passedChecks[] = [
-            "ID" => 509,
-            "Name" => "SPF Type PTR Check",
-            "Info" => !$ptrCheck ? "No type PTR found" : "Type PTR found",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        if ($ptrCheck) {
+            $passedChecks[] = [
+                "ID" => 509,
+                "Name" => "SPF Type PTR Check",
+                "Info" => !$ptrCheck ? "No type PTR found" : "Type PTR found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
+        }
 
         // Check for void lookups
-        $voidLookupsCheck = true; // Logic to check void lookups
-        $passedChecks[] = [
-            "ID" => 511,
-            "Name" => "SPF Void Lookups",
-            "Info" => !$voidLookupsCheck ? "Number of void lookups is OK" : "Void lookups found",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        $voidLookupsCheck = $this->checkForVoidLookups($spfData); // Call the new function
+        if ($voidLookupsCheck) {
+            $passedChecks[] = [
+                "ID" => 511,
+                "Name" => "SPF Void Lookups",
+                "Info" => !$voidLookupsCheck ? "Number of void lookups is OK" : "Void lookups found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
+        }
 
         // Check for MX Resource Records
         $mxCheck = true; // Logic to determine MX Resource Records
-        $passedChecks[] = [
-            "ID" => 420,
-            "Name" => "SPF MX Resource Records",
-            "Info" => !$mxCheck ? "Number of MX Resource Records is OK" : "MX Resource Records found",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        if ($mxCheck) {
+            $passedChecks[] = [
+                "ID" => 420,
+                "Name" => "SPF MX Resource Records",
+                "Info" => !$mxCheck ? "Number of MX Resource Records is OK" : "MX Resource Records found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
+        }
 
         // Check for null DNS Lookups
-        $nullCheck = false; // Logic to check null DNS lookups
-        $passedChecks[] = [
-            "ID" => 418,
-            "Name" => "SPF Record Null Value",
-            "Info" => !$nullCheck ? "No Null DNS Lookups found" : "Null DNS Lookups found",
-            "PublicDescription" => null,
-            "IsExcludedByUser" => false,
-        ];
+        $nullCheck = $this->checkForNullDnsLookups($spfRecords); // Call the new function
+        if ($nullCheck) {
+            $passedChecks[] = [
+                "ID" => 418,
+                "Name" => "SPF Record Null Value",
+                "Info" => !$nullCheck ? "No Null DNS Lookups found" : "Null DNS Lookups found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
+        }
 
         return $passedChecks;
     }
 
-    function isValidSpfSyntax($spfData) {
+    // Function to check for void lookups
+    private function checkForVoidLookups($spfData)
+    {
+        // Logic to determine void lookups (e.g., exceeding DNS lookup limits)
+        // Placeholder logic: return true if void lookups are found
+        $voidLookups = preg_match('/\bvoid\b/', $spfData); // Example logic
+        return $voidLookups > 0;
+    }
+
+    // Function to check for null DNS lookups
+    private function checkForNullDnsLookups($spfRecords)
+    {
+        // Logic to determine null DNS lookups
+        // Placeholder logic: return true if null lookups are found
+        foreach ($spfRecords as $record) {
+            if (empty($record['Value'])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    private function isValidSpfSyntax($spfData) {
         // Regular expression pattern for validating SPF syntax
         $spfPattern = '/^v=spf1\s+((?:(?:include|a|mx|ptr|ip4|ip6|exists|all)(?::[^\s;]+)?|\s+|;[^\n]*)*)-?all\s*$/';
     
@@ -433,7 +568,7 @@ class MailServerVerificationService
         return $domainInfo;
     }
 
-    function getWarningsChecks($spfRecord) {
+    private function getWarningsChecks($spfRecord) {
         // Initialize an array to hold warning checks
         $warningChecks = [];
     
@@ -519,7 +654,7 @@ class MailServerVerificationService
         return $warningChecks;
     }
 
-    function getFailedChecks($spfRecord, $domain) 
+    private function getFailedChecks($spfRecord, $domain) 
     {
         // Initialize an array to hold failed checks
         $failedChecks = [];
@@ -575,7 +710,7 @@ class MailServerVerificationService
         return $failedChecks;
     }  
 
-    function getSpfRecordsForDomain($domain) {
+    private function getSpfRecordsForDomain($domain) {
         // Initialize an array to hold SPF records
         $spfRecords = [];
     
@@ -597,8 +732,6 @@ class MailServerVerificationService
 
     private function getSpfInfo($spfData)
     {
-        $infoArray = [];
-
         if ($spfData) {
             // Assuming $record is the SPF record string
             // Assume the record format is: "v=spf1 include:example.com ~all"
@@ -658,7 +791,8 @@ class MailServerVerificationService
             ->setDnsResolver('127.0.0.1')
             // load default blacklists for dnsbl check - optional
             ->setBlacklists();
-            return $test->getDomainInformation($domain);
+            $infoEmailService = [$test->getDomainInformation($domain)];
+            return $infoEmailService;
             //return $test->getDomainInformation($domain);
             } catch (MxToolboxRuntimeException $e) {
                 echo $e->getMessage();
@@ -748,6 +882,103 @@ class MailServerVerificationService
 
     public function checkDMARC(string $domain)
     {
-        return dns_get_record('_dmarc.' . $domain, DNS_TXT);
+        
+        $startTime = microtime(true);
+        // Variables to track timeouts, errors, and whether an error occurred
+        $timeout = false;
+        $isError = false;
+        $errorMessage = [];
+        $timeoutThreshold = 5; // seconds
+        try {
+            // Perform DNS lookup and DMARC analysis
+            $dmarcData = $this->getDmarcRecord($domain);
+            $reportingNameServer = $this->getReportingNameServer($domain);
+            $dnsLookupResults = $this->getDnsLookup($domain); // Fetch related DNS lookups
+    
+            // End timing
+            $endTime = microtime(true);
+    
+            // Check for timeout (if execution time exceeds threshold)
+            $executionTime = ($endTime - $startTime);
+            if ($executionTime > $timeoutThreshold) {
+                $timeout = true;
+                throw new \Exception("Request timed out after $timeoutThreshold seconds.");
+            }
+    
+        } catch (\Exception $e) {
+            // Handle any error that occurs during the process
+            $isError = true;
+            $errorMessage = ["error"=>$e->getMessage()];
+            // Set default values in case of an error
+            $dmarcData = null;
+            $reportingNameServer = null;
+        }
+        // Calculate time to complete in milliseconds
+        $timeToComplete = ($endTime - $startTime) * 1000;
+        // Structure the response
+        $response = [
+            "UID" => Uuid::uuid4()->toString(),
+            "ArgumentType" => "domain",
+            "Command" => "dmarc",
+            "CommandArgument" => $domain,
+            "TimeRecorded" => (new \DateTime())->format(\DateTime::ATOM),
+            "ReportingNameServer" => $reportingNameServer,
+            "TimeToComplete" => round($timeToComplete, 2),
+            "RelatedIP" => $this->getRelatedIP($domain),
+            "ResourceRecordType" => 16,
+            "IsEmptySubDomain" => $this->getIsEmptySubDomain($domain),
+            "IsEndpoint" => $this->getIsEndpoint($domain),
+            "HasSubscriptions" => $this->getHasSubscriptions($domain),
+            "AlertgroupSubscriptionsId" => $this->getAlertgroupSubscriptionsId($domain),//
+            "Failed" => $this->getFailedChecks($dmarcData, $domain),
+            "Warnings" => $this->getWarningsChecks($dmarcData),
+            "Passed" => $this->getPassedChecks($dmarcData),
+            "Timeouts" => $timeout,
+            "Errors" => $errorMessage,
+            "IsError" => $isError,
+            //"Information" => $this->getDmarcInfo($dmarcData),
+            //"MultiInformation" => $this->getMultiDmarcInfo($dmarcData),//
+            //"Transcript" => $this->generateDmarcTranscript($domain, $dmarcData, $dnsLookupResults),
+            "MxRep" => 0,//
+            //"EmailServiceProvider" => $this->getDmarcInfoMxToolbox($domain),
+            "DnsServiceProvider" => $this->getDnsServiceProvider($domain),//
+            "DnsServiceProviderIdentifier" => $this->getDnsServiceProviderIdentifier($domain),//
+            "RelatedLookups" => $this->getDnsLookup($domain)
+        ];
+        return $response;
+        
+    }
+
+    private function getDmarcRecord(string $domain)
+    {
+        // Use DNS functions to fetch SPF record
+        $records = dns_get_record('_dmarc.' . $domain, DNS_TXT);
+        foreach ($records as $record) {
+            if (strpos($record['txt'], 'v=DMARC1') !== false) {
+                return $record['txt'];
+            }
+        }
+        return null;
+    } 
+
+    private function getcheckSpfLib(string $spfData, string $domain) {
+        /*$environment = new \SPFLib\Check\Environment("51.38.29.111", "mails-tourmag.com", "newsletter@mails-tourmag.com");
+        $checker = new Checker();
+        $checkResult = $checker->check($environment);
+        return $checkResult;*/
+        $decoder = new \SPFLib\Decoder();
+        try {
+            $record = $decoder->getRecordFromDomain($domain);
+            return $record;
+        } catch (\SPFLib\Exception $x) {
+            // Problems retrieving the SPF record from example.com,
+            // or problems decoding it
+            return;
+        }
+    }
+
+    private function getSpfCheckLib(string $spfData, string $domain) {
+        $checker = new SPFCheck(new DNSRecordGetter());
+        return $checker->getDomainSPFRecords($domain);
     }
 }
