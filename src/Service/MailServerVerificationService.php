@@ -90,6 +90,7 @@ class MailServerVerificationService
         //var_dump($this->getDnsPhpChecks($domain));
         //var_dump($this->getcheckSpfLib($spfData, $domain));
         //var_dump($this->getSpfCheckLib($spfData, $domain));
+        //var_dump(checkdnsrr($domain, "MX"));
         return $response;
     }
 
@@ -182,7 +183,29 @@ class MailServerVerificationService
         return [];
     }
 
-    private function getDnsServiceProvider(string $spfRecord) {
+    private function getDnsServiceProvider(string $spfRecord)
+    {
+        // Define a list of known DNS providers with their identifying patterns
+        $dnsProviders = [
+            'Google' => 'include:_spf.google.com',
+            'Microsoft' => 'include:spf.protection.outlook.com',
+            'Amazon AWS' => 'include:amazonses.com',
+            'GoDaddy' => 'include:secureserver.net',
+            'Cloudflare' => 'include:_spf.cloudflare.com',
+            'Zoho' => 'include:zoho.com',
+            'Mailchimp' => 'include:servers.mcsv.net',
+            'Yahoo' => 'include:spf.mail.yahoo.com',
+            'Ovh' => 'include:mx.ovh.com'
+        ];
+
+        // Iterate through the list of providers and check if their pattern exists in the SPF record
+        foreach ($dnsProviders as $providerName => $providerPattern) {
+            if (strpos($spfRecord, $providerPattern) !== false) {
+                return $providerName;  // Return the provider name if a match is found
+            }
+        }
+
+        // If no known providers are found, return null
         return null;
     }
 
@@ -873,11 +896,11 @@ class MailServerVerificationService
         return strpos($result, 'fail') === false; // Example logic
     }
 
-    public function checkDKIM(string $domain)
+    public function checkDKIM(string $domain, string $selector)
     {
         // PHPMailer can be used for DKIM validation
         // Extract DKIM TXT records
-        return dns_get_record('_domainkey.' . $domain, DNS_TXT);
+        return dns_get_record($selector . '._domainkey.' . $domain, DNS_TXT);
     }
 
     public function checkDMARC(string $domain)
