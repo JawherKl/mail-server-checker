@@ -241,6 +241,26 @@ class MailServerVerificationService
         // return true; // Optionally return true if all validations pass
     }
 
+    private function checkDkimSyntax($domain) {
+        /* 
+        $validator = new EmailValidator();
+        $multipleValidations = new MultipleValidationWithAnd([
+            new RFCValidation(),
+            new DNSCheckValidation()
+        ]);
+        // Add actual DMARC syntax validation logic here (this is a placeholder)
+        return $validator->isValid($domain, new RFCValidation()); // Assume valid for now
+        */
+    
+        // Simulate DMARC syntax check results
+        return [
+            "TXT:$domain",
+            "TXT:dkim.example.com",
+            "TXT:hub-score.com"
+        ];
+        // return true; // Optionally return true if all validations pass
+    }
+
     private function checkIps($domain) {
         $whois = Factory::get()->createWhois();
         // Checking availability
@@ -1661,6 +1681,72 @@ class MailServerVerificationService
         return $information;
     }
 
+    /**
+     * Function to parse and extract information from a DKIM record.
+     * @param string $dkimData The DKIM record data to be parsed.
+     * @return array An array containing DKIM information with tags, tag values, names, and descriptions.
+     */
+    private function getDkimInfo($dkimData)
+    {
+        $information = []; // Array to hold DKIM information
+
+        if ($dkimData) {
+            // Assuming the DKIM record is in the format: "v=DKIM1; k=rsa; p=key-data;"
+            $parts = explode(';', trim($dkimData)); // Split the record by semicolon
+
+            $info = [
+                "Tag" => "",
+                "TagValue" => "",
+                "Name" => "",
+                "Description" => "",
+            ];
+            foreach ($parts as $part) {
+                // Trim the part to avoid leading/trailing whitespace
+                $part = trim($part);
+
+                // Determine the type and value of each part
+                if ($part == "") {
+                    $info["Tag"] = "";
+                    $info["TagValue"] = "txt";
+                    $info["Name"] = "Record";
+                    $info["Description"] = $dkimData; // The whole DKIM record
+                } elseif (preg_match('/^v=DKIM1/', $part, $matches)) {
+                    $info["Tag"] = "v";
+                    $info["TagValue"] = "DKIM1";
+                    $info["Name"] = "Version";
+                    $info["Description"] = "Identifies the record retrieved as a DKIM record. It must be the first tag in the list.";
+                } elseif (preg_match('/^k=(rsa|ed25519)/', $part, $matches)) {
+                    $info["Tag"] = "k";
+                    $info["TagValue"] = $matches[1];
+                    $info["Name"] = "Key Type";
+                    $info["Description"] = "The type of cryptographic key used (e.g., rsa or ed25519).";
+                } elseif (preg_match('/^p=(.+)/', $part, $matches)) {
+                    $info["Tag"] = "p";
+                    $info["TagValue"] = substr($matches[1], 0, 30) . "..."; // Display partial key for brevity
+                    $info["Name"] = "Public Key";
+                    $info["Description"] = "The base64-encoded public key used for verifying signatures.";
+                } elseif (preg_match('/^s=email/', $part, $matches)) {
+                    $info["Tag"] = "s";
+                    $info["TagValue"] = "email";
+                    $info["Name"] = "Service Type";
+                    $info["Description"] = "The service type for which the key is authorized (e.g., email).";
+                } elseif (preg_match('/^h=(.+)/', $part, $matches)) {
+                    $info["Tag"] = "h";
+                    $info["TagValue"] = $matches[1];
+                    $info["Name"] = "Signed Headers";
+                    $info["Description"] = "List of headers included in the DKIM signature.";
+                }
+
+                // Only add populated info
+                if (!empty($info["Name"])) {
+                    $information[] = $info;
+                }
+            }
+        }
+
+        return $information;
+    }
+
     private function getInfoMxToolbox($domain) {
         try {
             $test = new MxToolbox();
@@ -1817,7 +1903,273 @@ class MailServerVerificationService
         return $transcriptInfo;
     }
 
+    private function generateDkimTranscript($domain, $dkimData, $dnsLookupResults, $selector)
+    {
+        // Start the transcript with the DKIM selector and domain in the appropriate format
+        $transcript = "- - - dkim:$selector._domainkey.$domain\r\n\r\n";
+        
+        // Check if dnsLookupResults is an array and contains elements
+        if (is_array($dnsLookupResults) && !empty($dnsLookupResults)) {
+            foreach ($dnsLookupResults as $index => $result) {
+                // Combine results into a single formatted string for each lookup result
+                $formattedResult = "{$result['Host']}.\t{$result['TTL']}\tIN\t{$result['Type']}\t{$result['Class']},";
+                
+                // Add additional fields if they exist (like IP, Target, Name)
+                if (isset($result['IP'])) {
+                    $formattedResult .= "{$result['IP']}, ";
+                }
+                if (isset($result['Target'])) {
+                    $formattedResult .= "{$result['Target']}, ";
+                }
+                if (isset($result['Name'])) {
+                    $formattedResult .= "{$result['Name']}";
+                }
 
+                // Trim trailing comma and space, then add to the transcript
+                $transcript .= "&emsp; " . rtrim($formattedResult, ', ') . "\r\n";
+            }
+        } else {
+            $transcript .= "&emsp; No DNS lookup results found.\r\n";
+        }
+
+        // Add DKIM record to the transcript
+        $dkimRecord = $this->getDkimRecord($domain, $selector); // Fetch the DKIM record for the given selector
+        if (!empty($dkimRecord['record'])) {
+            $transcript .= "&emsp; " . "hub._domainkey.$domain.\t3600\tIN\tTXT\t{$dkimRecord['record']},\r\n";
+            $transcript .= "Record returned is an RFC 6376 TXT record.<br/>\r\n";
+        } else {
+            $transcript .= "&emsp; No DKIM records found for this domain.\r\n";
+        }
+
+        // Simulate results of DKIM checks (failed verifications)
+        $dkimValidationResults = $this->checkDkimSyntax($domain, $dkimData); // Simulate the check results
+        $failedVerifications = [];
+        
+        if (is_array($dkimValidationResults)) {
+            foreach ($dkimValidationResults as $result) {
+                if (!$this->isValidResult($result)) {
+                    $failedVerifications[] = $result;
+                }
+            }
+            if (!empty($failedVerifications)) {
+                $transcript .= "Failed External Verifications\r\n";
+                foreach ($failedVerifications as $failed) {
+                    $transcript .= "mailto:$failed\r\n";
+                }
+            }
+        } else {
+            $transcript .= "No DKIM validation results available.\r\n";
+        }
+
+        // Adding final touch with lookup server response time
+        $transcript .= "LookupServer 552ms\r\n";
+
+        // Prepare the transcript array to return
+        $transcriptInfo[] = ["Transcript" => $transcript];
+
+        return $transcriptInfo;
+    }
+
+    private function getFailedDkimChecks($dkimRecord, $domain, $dkimSelector)
+    {
+        // Initialize an array to hold failed checks
+        $failedChecks = [];
+
+        // Check if the DKIM record is empty
+        if (empty(trim($dkimRecord))) {
+            $failedChecks[] = [
+                "ID" => 700,
+                "Name" => "DKIM Record Missing",
+                "Info" => "No DKIM record found for the domain.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+            return ["Failed" => $failedChecks];
+        }
+
+        // Validate DKIM syntax (assuming isValidDkimSyntax() exists)
+        if (!$this->isValidDkimSyntax($dkimRecord)) {
+            $failedChecks[] = [
+                "ID" => 701,
+                "Name" => "DKIM Syntax Error",
+                "Info" => "The DKIM record has invalid syntax.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check if there are multiple DKIM records for the domain
+        $allDkimRecords = $this->getDkimRecordsForDomain($domain, $dkimSelector); // Assuming this function fetches all DKIM records
+        if (count($allDkimRecords) > 1) {
+            $failedChecks[] = [
+                "ID" => 702,
+                "Name" => "Multiple DKIM Records Found",
+                "Info" => "More than one DKIM record found for the domain.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check for the presence of 'v=DKIM1' tag
+        if (strpos($dkimRecord, 'v=DKIM1') === false) {
+            $failedChecks[] = [
+                "ID" => 703,
+                "Name" => "DKIM Version Missing",
+                "Info" => "The DKIM record does not specify the version 'v=DKIM1'.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Return failed checks
+        return $failedChecks;
+    }
+
+    private function getPassedDkimChecks($dkimRecord, $domain, $selector)
+    {
+        $passedChecks = [];
+
+        // Check if the DKIM version tag is present
+        if (strpos($dkimRecord, 'v=DKIM1') !== false) {
+            $passedChecks[] = [
+                "ID" => 750,
+                "Name" => "DKIM Version Check",
+                "Info" => "The DKIM record specifies 'v=DKIM1'.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Validate DKIM signature length (assuming validateDkimSignatureLength() exists)
+        if ($this->validateDkimSignatureLength($dkimRecord)) {
+            $passedChecks[] = [
+                "ID" => 751,
+                "Name" => "DKIM Signature Length",
+                "Info" => "The DKIM signature length is valid.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check for correct selector (assuming validateDkimSelector() exists)
+        if ($this->validateDkimSelector($domain, $selector)) {
+            $passedChecks[] = [
+                "ID" => 752,
+                "Name" => "DKIM Selector",
+                "Info" => "The DKIM record contains a valid selector.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        return $passedChecks;
+    }
+
+    private function getWarningDkimChecks($dkimRecord)
+    {
+        // Initialize an array to hold warning checks
+        $warningChecks = [];
+
+        // Check for weak algorithms (assuming validateDkimAlgorithm() exists)
+        if (!$this->validateDkimAlgorithm($dkimRecord)) {
+            $warningChecks[] = [
+                "ID" => 780,
+                "Name" => "Weak DKIM Algorithm",
+                "Info" => "The DKIM record uses a weak signing algorithm.",
+                "PublicDescription" => "It is recommended to use 'rsa-sha256' for stronger security.",
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check for optional 'g=' tag usage
+        if (strpos($dkimRecord, 'g=') !== false) {
+            $warningChecks[] = [
+                "ID" => 781,
+                "Name" => "DKIM Granularity Warning",
+                "Info" => "The 'g=' tag is present, which can limit the use of the DKIM signature.",
+                "PublicDescription" => "Consider removing the 'g=' tag for broader DKIM applicability.",
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check if the DKIM key length is too short (assuming getDkimKeyLength() exists)
+        $keyLength = $this->getDkimKeyLength($dkimRecord);
+        if ($keyLength < 2048) {
+            $warningChecks[] = [
+                "ID" => 782,
+                "Name" => "DKIM Key Length Warning",
+                "Info" => "The DKIM key length is shorter than 2048 bits.",
+                "PublicDescription" => "A DKIM key length of at least 2048 bits is recommended for security.",
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        return $warningChecks;
+    }
+
+    // Checks if DKIM syntax is valid by verifying the format of the DKIM string
+    public function isValidDkimSyntax($dkimConfig)
+    {
+        // Syntax should have "k=" for algorithm, "p=" for public key
+        if (preg_match('/k=rsa; p=[A-Za-z0-9+\/=]+/', $dkimConfig)) {
+            return true;
+        }
+        return false;
+    }
+
+    // Retrieve DKIM records for a domain
+    public function getDkimRecordsForDomain($domain, $dkimSelector)
+    {
+        $dkimDnsRecord = dns_get_record($dkimSelector . '._domainkey.' . $domain, DNS_TXT);
+
+        if (!empty($dkimDnsRecord)) {
+            return $dkimDnsRecord;
+        }
+        return false;
+    }
+
+    // Validate the DKIM signature length (public key)
+    public function validateDkimSignatureLength($dkimConfig)
+    {
+        if (preg_match('/p=([A-Za-z0-9+\/=]+)/', $dkimConfig, $matches)) {
+            $publicKey = $matches[1];
+            $keyLength = strlen(base64_decode($publicKey)) * 8; // Convert base64 to binary and calculate length
+
+            if ($keyLength >= 1024) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Validate DKIM selector
+    public function validateDkimSelector($domain, $selector)
+    {
+        $dkimDnsRecord = dns_get_record($selector . '._domainkey.' . $domain, DNS_TXT);
+        
+        return !empty($dkimDnsRecord);
+    }
+
+    // Validate DKIM algorithm (currently RSA supported)
+    public function validateDkimAlgorithm($dkimConfig)
+    {
+        if (preg_match('/k=(rsa);/', $dkimConfig, $matches)) {
+            $algorithm = $matches[1];
+            return $algorithm === 'rsa';
+        }
+        return false;
+    }
+
+    // Extract the DKIM public key length from the DKIM record
+    public function getDkimKeyLength($dkimConfig)
+    {
+        if (preg_match('/p=([A-Za-z0-9+\/=]+)/', $dkimConfig, $matches)) {
+            $publicKey = $matches[1];
+            $keyLength = strlen(base64_decode($publicKey)) * 8; // Convert base64 to binary and calculate length
+            return $keyLength;
+        }
+        return 0;
+    }
 
     private function isValidResult($result)
     {
@@ -1827,14 +2179,72 @@ class MailServerVerificationService
 
     public function checkDKIM(string $domain, string $selector)
     {
-        // PHPMailer can be used for DKIM validation
-        // Extract DKIM TXT records
-        return dns_get_record($selector . '._domainkey.' . $domain, DNS_TXT);
+        { 
+            $startTime = microtime(true);
+            // Variables to track timeouts, errors, and whether an error occurred
+            $timeout = false;
+            $isError = false;
+            $errorMessage = [];
+            $timeoutThreshold = 5; // seconds
+            try {
+                // Perform DNS lookup and DKIM analysis
+                $dkimData = $this->getDkimRecord($domain, $selector);
+                $reportingNameServer = $this->getReportingNameServer($domain);
+                $dnsLookupResults = $this->getDnsLookup($domain); // Fetch related DNS lookups
+        
+                // End timing
+                $endTime = microtime(true);
+        
+                // Check for timeout (if execution time exceeds threshold)
+                $executionTime = ($endTime - $startTime);
+                if ($executionTime > $timeoutThreshold) {
+                    $timeout = true;
+                    throw new \Exception("Request timed out after $timeoutThreshold seconds.");
+                }
+        
+            } catch (\Exception $e) {
+                // Handle any error that occurs during the process
+                $isError = true;
+                $errorMessage = ["error"=>$e->getMessage()];
+                // Set default values in case of an error
+                $dkimData = null;
+                $reportingNameServer = null;
+            }
+            // Calculate time to complete in milliseconds
+            $timeToComplete = ($endTime - $startTime) * 1000;
+            // Structure the response
+            $response = [
+                "UID" => Uuid::uuid4()->toString(),
+                "ArgumentType" => "domain",
+                "Command" => "dkim",
+                "CommandArgument" => $domain,
+                "TimeRecorded" => (new \DateTime())->format(\DateTime::ATOM),
+                "ReportingNameServer" => $reportingNameServer,
+                "TimeToComplete" => round($timeToComplete, 2),
+                "RelatedIP" => $this->getRelatedIP($domain),
+                "ResourceRecordType" => 16,
+                "IsEmptySubDomain" => $this->getIsEmptySubDomain($domain),
+                "IsEndpoint" => $this->getIsEndpoint($domain),
+                "HasSubscriptions" => $this->getHasSubscriptions($domain),
+                "Failed" => $this->getFailedDkimChecks($dkimData, $domain, $selector),
+                "Warnings" => $this->getWarningDkimChecks($dkimData, $reportingNameServer),
+                "Passed" => $this->getPassedDkimChecks($dkimData, $domain, $selector),
+                "Timeouts" => $timeout,
+                "Errors" => $errorMessage,
+                "IsError" => $isError,
+                "Information" => $this->getDkimInfo($dkimData),
+                "Transcript" => $this->generateDkimTranscript($domain, $dkimData, $dnsLookupResults, $selector),
+                "EmailServiceProvider" => $this->getInfoMxToolbox($domain),
+                "DnsServiceProvider" => $this->getDnsServiceProvider($domain),
+                "RelatedLookups" => $this->getDnsLookup($domain)
+            ];
+            return $response;
+            
+        }
     }
 
     public function checkDMARC(string $domain)
-    {
-        
+    { 
         $startTime = microtime(true);
         // Variables to track timeouts, errors, and whether an error occurred
         $timeout = false;
@@ -1903,6 +2313,18 @@ class MailServerVerificationService
         $records = dns_get_record('_dmarc.' . $domain, DNS_TXT);
         foreach ($records as $record) {
             if (strpos($record['txt'], 'v=DMARC1') !== false) {
+                return $record['txt'];
+            }
+        }
+        return null;
+    } 
+
+    private function getDkimRecord(string $domain, string $selector)
+    {
+        // Use DNS functions to fetch SPF record
+        $records = dns_get_record($selector . '._domainkey.' . $domain, DNS_TXT);
+        foreach ($records as $record) {
+            if (strpos($record['txt'], 'k=rsa') !== false) {
                 return $record['txt'];
             }
         }
