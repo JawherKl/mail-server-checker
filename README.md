@@ -1,7 +1,7 @@
 # Mail Server Checker
 
 ## Overview
-The **Mail Server Checker** is a PHP-based tool designed to analyze and verify the DNS records for a given domain. It can check various DNS record types, including A, NS, MX, SOA, and TXT, providing detailed information about the mail server configuration and its associated DNS records.
+The **Mail Server Checker** is a PHP new tool designed to analyze and verify the different protocols (SPF, DMARC, DKIM) releated to the domain mail server, all that verification and analyse based at PHP-based fonction `dns_get_records` to get the DNS records for a given specifique mailing domain. It can check various DNS record types, including A, NS, MX, SOA, and TXT, providing detailed information about the mail server configuration and its associated DNS records.
 
 ## Features
 - Retrieve and display various DNS records for a specified domain.
@@ -17,3 +17,4 @@ The **Mail Server Checker** is a PHP-based tool designed to analyze and verify t
 1. Clone the repository:
    ```bash
    git clone https://github.com/your-username/mail-server-checker.git
+   ```
