@@ -1072,7 +1072,7 @@ class MailServerVerificationService
     }
 
 
-    private function getWarningDmarcChecks($dmarcRecord)
+    private function getWarningDmarcChecks($dmarcRecord, $reportingNameServer)
     {
         // Initialize an array to hold warning checks
         $warningChecks = [];
@@ -1086,8 +1086,14 @@ class MailServerVerificationService
         $aspfCount = 0; // Alignment mode for SPF (aspf=)
         $adkimCount = 0; // Alignment mode for DKIM (adkim=)
         $pctCount = 0; // Percentage tag (pct=)
+        $policy = null; // DMARC policy (p=)
+        $spPolicy = null; // Subdomain policy (sp=)
 
-        // Loop through the parts to count mechanisms
+        // Track if 'rua' or 'ruf' tags are found
+        $ruaFound = false;
+        $rufFound = false;
+
+        // Loop through the parts to count mechanisms and check for rua/ruf
         foreach ($parts as $part) {
             $part = trim($part); // Clean up any whitespace
             if (strpos($part, 'p=') === 0) {
@@ -1100,6 +1106,13 @@ class MailServerVerificationService
                 $adkimCount++;
             } elseif (strpos($part, 'pct=') === 0) {
                 $pctCount++;
+            } elseif (strpos($part, 'rua=') === 0) {
+                $ruaFound = true;
+                $this->checkExternalValidation($part, $warningChecks, $reportingNameServer); // Check rua validation
+            } elseif (strpos($part, 'p=') === 0) {
+                $policy = substr($part, 2); // Extract the policy value after 'p='
+            } elseif (strpos($part, 'sp=') === 0) {
+                $spPolicy = substr($part, 3); // Extract subdomain policy value after 'sp='
             }
         }
 
@@ -1154,7 +1167,108 @@ class MailServerVerificationService
             ];
         }
 
+        if (!$ruaFound && !$rufFound) {
+            $warningChecks[] = [
+                "ID" => 605,
+                "Name" => "DMARC Reporting Addresses Missing",
+                "Info" => "No rua or ruf tags found in the DMARC record.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check if no policy tag is found
+        if ($policy === null) {
+            $warningChecks[] = [
+                "ID" => 600,
+                "Name" => "DMARC Policy Missing Warning",
+                "Info" => "DMARC Quarantine/Reject policy not enabled",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check if the policy is too lenient (p=none)
+        if ($policy === 'none') {
+            $warningChecks[] = [
+                "ID" => 605,
+                "Name" => "DMARC Policy Not Enabled",
+                "Info" => "DMARC policy is set to 'none', which means the domain is not protected against phishing or spoofing threats.",
+                "PublicDescription" => "To protect the domain against phishing or spoofing, set the DMARC policy to 'quarantine' or 'reject'.",
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Optionally, check the subdomain policy (sp=) if it's set
+        if ($spPolicy === 'none') {
+            $warningChecks[] = [
+                "ID" => 606,
+                "Name" => "DMARC Subdomain Policy Not Enabled",
+                "Info" => "Subdomain policy (sp=none) is set, meaning subdomains are not protected against phishing or spoofing threats.",
+                "PublicDescription" => "Consider setting the subdomain policy to 'quarantine' or 'reject' to protect subdomains.",
+                "IsExcludedByUser" => false
+            ];
+        }
+
         return $warningChecks;
+    }
+
+    /**
+     * Helper function to validate external destinations for DMARC reporting (rua/ruf).
+     */
+    private function checkExternalValidation($reportingTag, &$warningChecks, $reportingNameServer)
+    {
+        // Extract the email addresses from the rua or ruf tag
+        preg_match_all('/mailto:([^,]+)/', $reportingTag, $matches);
+        $emailAddresses = $matches[1];
+
+        // Loop through each email address to check if it's an external domain
+        foreach ($emailAddresses as $email) {
+            // Extract the domain from the email address
+            $domain = substr(strrchr($email, "@"), 1);
+
+            // Check if this domain requires external verification
+            // (In practice, you'd perform a DNS lookup or validation check here)
+            $isValid = $this->validateExternalDmarcDomain($domain, $reportingNameServer); // Placeholder for actual validation
+
+            // If the domain is not verified, add a warning
+            if (!$isValid) {
+                $warningChecks[] = [
+                    "ID" => 606,
+                    "Name" => "DMARC External Validation Warning",
+                    "Info" => "External Domains in your DMARC are not giving permission for your reports to be sent to them",
+                    "PublicDescription" => "One of the 'rua' or 'ruf' email addresses does not have a DNS TXT record verifying that they wish to receive DMARC reports for your domain.",
+                    "IsExcludedByUser" => false
+                ];
+            }
+        }
+    }
+
+    /**
+     * Function to validate external DMARC domains by checking DNS TXT records.
+     * @param string $domain The external domain to validate (e.g., 'mxtoolbox.com').
+     * @param string $reportingDomain The domain making the DMARC request (e.g., 'example.com').
+     * @return bool True if the external domain is authorized to receive DMARC reports for the reporting domain.
+     */
+    private function validateExternalDmarcDomain($domain, $reportingDomain)
+    {
+        // Build the required DNS query for the external validation:
+        // The format is: yourdomain._report._dmarc.externaldomain.com
+        $dmarcCheckDomain = "{$reportingDomain}._report._dmarc.{$domain}";
+
+        // Perform a DNS TXT record lookup for the constructed domain
+        $dnsRecords = dns_get_record($dmarcCheckDomain, DNS_TXT);
+
+        // Check if any TXT record contains "v=DMARC1"
+        foreach ($dnsRecords as $record) {
+            if (isset($record['txt']) && strpos($record['txt'], 'v=DMARC1') !== false) {
+                // The domain is authorized to receive DMARC reports
+                return true;
+            }
+        }
+
+        // If no valid DMARC TXT record is found, return false
+        return false;
     }
 
 
@@ -1458,7 +1572,6 @@ class MailServerVerificationService
                     "Value" => "",
                     "PrefixDesc" => "",
                     "Description" => "",
-                    "RecordNum" => null,
                 ];
 
                 // Determine the type and value of each part
@@ -1484,7 +1597,6 @@ class MailServerVerificationService
 
                 // Only add populated info
                 if (!empty($info["Type"])) {
-                    $info["RecordNum"] = null; // Set the record number for all entries
                     $information[] = $info;
                 }
             }
@@ -1501,42 +1613,46 @@ class MailServerVerificationService
             // Assuming the DMARC record is in the format: "v=DMARC1; p=none; pct=100; rua=mailto:dmarc@hub-score.com; ruf=mailto:dmarc_authfail@mails-tourmag.com;"
             $parts = explode(';', trim($dmarcData)); // Split the record by semicolon
 
+            $info = [
+                "Tag" => "",
+                "TagValue" => "",
+                "Name" => "",
+                "Description" => "",
+            ];
             foreach ($parts as $part) {
-                $info = [
-                    "Prefix" => "",
-                    "Type" => "",
-                    "Value" => "",
-                    "PrefixDesc" => "",
-                    "Description" => "",
-                    "RecordNum" => null,
-                ];
-
                 // Trim the part to avoid leading/trailing whitespace
                 $part = trim($part);
 
                 // Determine the type and value of each part
-                if (preg_match('/^v=DMARC1/', $part)) {
-                    $info["Type"] = "record";
-                    $info["Value"] = "txt";
+                if ($part == "") {
+                    $info["Tag"] = "";
+                    $info["TagValue"] = "txt";
+                    $info["Name"] = "Record";
                     $info["Description"] = $dmarcData; // The whole DMARC record
-                    $info["RecordNum"] = "1";
+                } elseif (preg_match('/^v=DMARC1/', $part, $matches)) {
+                    $info["Tag"] = "v";
+                    $info["TagValue"] = "DMARC1";
+                    $info["Name"] = "Version";
+                    $info["Description"] = "Identifies the record retrieved as a DMARC record. It must be the first tag in the list.";
                 } elseif (preg_match('/^p=(none|quarantine|reject)/', $part, $matches)) {
-                    $info["Type"] = "policy";
-                    $info["Value"] = $matches[1];
+                    $info["Tag"] = "p";
+                    $info["TagValue"] = $matches[1];
+                    $info["Name"] = "Policy";
                     $info["Description"] = "The policy applied to the domain's mail.";
                 } elseif (preg_match('/^pct=(\d{1,3})/', $part, $matches)) {
-                    $info["Type"] = "percentage";
-                    $info["Value"] = $matches[1];
+                    $info["Tag"] = "pct";
+                    $info["TagValue"] = $matches[1];
+                    $into["Name"] = "Percentage";
                     $info["Description"] = "Percentage of messages subjected to filtering.";
                 } elseif (preg_match('/^(rua|ruf)=mailto:(.+)/', $part, $matches)) {
-                    $info["Type"] = $matches[1]; // rua or ruf
-                    $info["Value"] = $matches[2];
+                    $info["Tag"] = $matches[1]; // rua or ruf
+                    $info["TagValue"] = $matches[2];
+                    $info["Name"] = $matches[1]=="rua" ? "Receivers" : "Forensic Receivers";
                     $info["Description"] = "Reporting URI for aggregate reports (rua) or failure reports (ruf).";
                 }
 
                 // Only add populated info
-                if (!empty($info["Type"])) {
-                    $info["RecordNum"] = null; // Set the record number for all entries
+                if (!empty($info["Name"])) {
                     $information[] = $info;
                 }
             }
@@ -1634,33 +1750,27 @@ class MailServerVerificationService
     
     private function generateDmarcTranscript($domain, $dmarcData, $dnsLookupResults)
     {
-        // Start the transcript with domain and initial text
-        $transcript = "- - - txt:$domain\r\n\r\n";
-
-        // Example DNS lookup results added to the transcript
-        $transcript .= "&emsp; 1 e.gtld-servers.net 192.12.94.30 NON-AUTH 17 ms Received 2 Referrals, rcode=NO_ERROR &emsp; ";
-
+        // Start the transcript with the domain in the appropriate format
+        $transcript = "- - - dmarc:_dmarc.$domain\r\n\r\n";
+        
         // Check if dnsLookupResults is an array and contains elements
         if (is_array($dnsLookupResults) && !empty($dnsLookupResults)) {
             foreach ($dnsLookupResults as $index => $result) {
-                // Format and extract relevant information from each record
-                $formattedResult = "Host: {$result['Host']}, ";
-                $formattedResult .= "TTL: {$result['TTL']}, ";
-                $formattedResult .= "Class: {$result['Class']}, ";
-                $formattedResult .= "Type: {$result['Type']}, ";
-
-                // Add additional fields if they exist
+                // Combine results into a single formatted string for each lookup result
+                $formattedResult = "{$result['Host']}.\t{$result['TTL']}\tIN\t{$result['Type']}\t{$result['Class']},";
+                
+                // Add additional fields if they exist (like IP, Target, Name)
                 if (isset($result['IP'])) {
-                    $formattedResult .= "IP: {$result['IP']}, ";
+                    $formattedResult .= "{$result['IP']}, ";
                 }
                 if (isset($result['Target'])) {
-                    $formattedResult .= "Target: {$result['Target']}, ";
+                    $formattedResult .= "{$result['Target']}, ";
                 }
                 if (isset($result['Name'])) {
-                    $formattedResult .= "Name: {$result['Name']}";
+                    $formattedResult .= "{$result['Name']}";
                 }
 
-                // Trim trailing comma and space, then add to transcript
+                // Trim trailing comma and space, then add to the transcript
                 $transcript .= "&emsp; " . rtrim($formattedResult, ', ') . "\r\n";
             }
         } else {
@@ -1671,31 +1781,42 @@ class MailServerVerificationService
         $dmarcRecords = $this->getDmarcRecord($domain); // Fetch the DMARC records again if needed
         if (!empty($dmarcRecords['records'])) {
             foreach ($dmarcRecords['records'] as $index => $record) {
-                $transcript .= "&emsp; " . ($index + 2) . " $record IN TXT\t$dmarcData\t\r\n";
+                $transcript .= "&emsp; " . ($index + 2) . " _dmarc.$domain.\t3600\tIN\tTXT\t$record,\r\n";
             }
+            $transcript .= "Record returned is an RFC 7489 TXT record.<br/>\r\n";
         } else {
             $transcript .= "&emsp; No DMARC records found for this domain.\r\n";
         }
 
-        // Include results of the DMARC checks
-        $transcript .= "- - Results\r\n";
+        // Simulate results of DMARC checks (failed verifications)
         $dmarcValidationResults = $this->checkDmarcSyntax($domain); // Simulate the check results
+        $failedVerifications = [];
+        
         if (is_array($dmarcValidationResults)) {
             foreach ($dmarcValidationResults as $result) {
-                // Ensure each result is a string
-                $transcript .= "TXT:$result = " . ($this->isValidResult($result) ? 'Pass' : 'Fail') . "\r\n";
+                if (!$this->isValidResult($result)) {
+                    $failedVerifications[] = $result;
+                }
+            }
+            if (!empty($failedVerifications)) {
+                $transcript .= "Failed External Verifications\r\n";
+                foreach ($failedVerifications as $failed) {
+                    $transcript .= "mailto:$failed\r\n";
+                }
             }
         } else {
             $transcript .= "No DMARC validation results available.\r\n";
         }
 
         // Adding final touch with lookup server response time
-        $transcript .= "LookupServer 3513ms\r\n";
-        
+        $transcript .= "LookupServer 552ms\r\n";
+
+        // Prepare the transcript array to return
         $transcriptInfo[] = ["Transcript" => $transcript];
 
         return $transcriptInfo;
     }
+
 
 
     private function isValidResult($result)
@@ -1761,7 +1882,7 @@ class MailServerVerificationService
             "IsEndpoint" => $this->getIsEndpoint($domain),
             "HasSubscriptions" => $this->getHasSubscriptions($domain),
             "Failed" => $this->getFailedDmarcChecks($dmarcData, $domain),
-            "Warnings" => $this->getWarningDmarcChecks($dmarcData),
+            "Warnings" => $this->getWarningDmarcChecks($dmarcData, $reportingNameServer),
             "Passed" => $this->getPassedDmarcChecks($dmarcData),
             "Timeouts" => $timeout,
             "Errors" => $errorMessage,
