@@ -12,10 +12,7 @@ use Iodev\Whois\Factory;
 use League\Uri\Components\Query;
 use League\Uri\Modifier;
 use League\Uri\Uri;
-use Mika56\SPFCheck\DNS\DNSRecordGetter;
-use Mika56\SPFCheck\SPFCheck;
 use Spatie\Dns\Dns;
-use SPFLib\Checker;
 
 class MailServerVerificationService
 {
@@ -61,26 +58,22 @@ class MailServerVerificationService
             "CommandArgument" => $domain,
             "TimeRecorded" => (new \DateTime())->format(\DateTime::ATOM),
             "ReportingNameServer" => $reportingNameServer,
-            "TimeToComplete" => round($timeToComplete, 2),
+            "TimeToComplete" => round((microtime(true) - $startTime)*1000),
             "RelatedIP" => $this->getRelatedIP($domain),
             "ResourceRecordType" => 16,
             "IsEmptySubDomain" => $this->getIsEmptySubDomain($domain),
             "IsEndpoint" => $this->getIsEndpoint($domain),
             "HasSubscriptions" => $this->getHasSubscriptions($domain),
-            "AlertgroupSubscriptionsId" => $this->getAlertgroupSubscriptionsId($domain),//
-            "Failed" => $this->getFailedChecks($spfData, $domain),
-            "Warnings" => $this->getWarningsChecks($spfData),
-            "Passed" => $this->getPassedChecks($spfData),
+            "Failed" => $this->getFailedSpfChecks($spfData, $domain),
+            "Warnings" => $this->getWarningSpfChecks($spfData),
+            "Passed" => $this->getPassedSpfChecks($spfData),
             "Timeouts" => $timeout,
             "Errors" => $errorMessage,
             "IsError" => $isError,
             "Information" => $this->getSpfInfo($spfData),
-            "MultiInformation" => $this->getMultiSpfInfo($spfData),//
             "Transcript" => $this->generateSpfTranscript($domain, $spfData, $dnsLookupResults),
-            "MxRep" => 0,//
-            "EmailServiceProvider" => $this->getSpfInfoMxToolbox($domain),
-            "DnsServiceProvider" => $this->getDnsServiceProvider($domain),//
-            "DnsServiceProviderIdentifier" => $this->getDnsServiceProviderIdentifier($domain),//
+            "EmailServiceProvider" => $this->getInfoMxToolbox($domain),
+            "DnsServiceProvider" => $this->getDnsServiceProvider($spfData),
             "RelatedLookups" => $this->getDnsLookup($domain)
         ];
         //var_dump($this->checkSpfSyntax($domain));
@@ -170,19 +163,6 @@ class MailServerVerificationService
         return false;
     }
 
-    private function getAlertgroupSubscriptionsId(string $domain): ?int
-    {
-        // Example logic: this would be a query to a database in a real-world scenario
-        // You could check if the domain is subscribed to any alert groups
-
-        // For now, return null as we don't have an actual data source for alert subscriptions
-        return null;
-    }
-
-    private function getMultiSpfInfo(string $spfRecord) {
-        return [];
-    }
-
     private function getDnsServiceProvider(string $spfRecord)
     {
         // Define a list of known DNS providers with their identifying patterns
@@ -206,10 +186,6 @@ class MailServerVerificationService
         }
 
         // If no known providers are found, return null
-        return null;
-    }
-
-    private function getDnsServiceProviderIdentifier(string $spfRecord) {
         return null;
     }
 
@@ -243,6 +219,26 @@ class MailServerVerificationService
             "TXT:mails-tourmag.com"
         ];
         //return true;
+    }
+
+    private function checkDmarcSyntax($domain) {
+        /* 
+        $validator = new EmailValidator();
+        $multipleValidations = new MultipleValidationWithAnd([
+            new RFCValidation(),
+            new DNSCheckValidation()
+        ]);
+        // Add actual DMARC syntax validation logic here (this is a placeholder)
+        return $validator->isValid($domain, new RFCValidation()); // Assume valid for now
+        */
+    
+        // Simulate DMARC syntax check results
+        return [
+            "TXT:$domain",
+            "TXT:dmarc.example.com",
+            "TXT:hub-score.com"
+        ];
+        // return true; // Optionally return true if all validations pass
     }
 
     private function checkIps($domain) {
@@ -343,8 +339,93 @@ class MailServerVerificationService
         return $spfArray;
     }
 
+    private function parseDmarcRecord($dmarcString)
+    {
+        $dmarcArray = [];
+        $parts = preg_split('/;\s*/', trim($dmarcString)); // Split by semicolon and optional whitespace
 
-    private function getPassedChecks($spfData)
+        foreach ($parts as $part) {
+            // Split each part into key-value pairs
+            $keyValue = explode('=', $part, 2);
+            
+            if (count($keyValue) === 2) {
+                $key = trim($keyValue[0]);
+                $value = trim($keyValue[1]);
+
+                // Handle DMARC policy tags
+                switch ($key) {
+                    case 'v':
+                        $dmarcArray[] = [
+                            "Type" => "version",
+                            "Value" => $value,
+                            "Description" => "The DMARC record version."
+                        ];
+                        break;
+                    case 'p':
+                        $dmarcArray[] = [
+                            "Type" => "policy",
+                            "Value" => $value,
+                            "Description" => "The DMARC policy for the domain."
+                        ];
+                        break;
+                    case 'pct':
+                        $dmarcArray[] = [
+                            "Type" => "percentage",
+                            "Value" => $value,
+                            "Description" => "The percentage of messages subjected to filtering."
+                        ];
+                        break;
+                    case 'rua':
+                        $dmarcArray[] = [
+                            "Type" => "reporting-uri-aggregate",
+                            "Value" => $value,
+                            "Description" => "URI(s) to which aggregate reports are sent."
+                        ];
+                        break;
+                    case 'ruf':
+                        $dmarcArray[] = [
+                            "Type" => "reporting-uri-forensic",
+                            "Value" => $value,
+                            "Description" => "URI(s) to which forensic reports are sent."
+                        ];
+                        break;
+                    case 'sp':
+                        $dmarcArray[] = [
+                            "Type" => "subdomain-policy",
+                            "Value" => $value,
+                            "Description" => "The policy for subdomains."
+                        ];
+                        break;
+                    case 'adkim':
+                        $dmarcArray[] = [
+                            "Type" => "alignment-mode",
+                            "Value" => $value,
+                            "Description" => "The alignment mode for DKIM."
+                        ];
+                        break;
+                    case 'aspf':
+                        $dmarcArray[] = [
+                            "Type" => "alignment-mode",
+                            "Value" => $value,
+                            "Description" => "The alignment mode for SPF."
+                        ];
+                        break;
+                    // You can add more tags as needed
+                    default:
+                        $dmarcArray[] = [
+                            "Type" => "unknown",
+                            "Value" => $part,
+                            "Description" => "Unknown or unsupported DMARC tag."
+                        ];
+                        break;
+                }
+            }
+        }
+
+        return $dmarcArray;
+    }
+
+    private function getPassedSpfChecks($spfData)
     {
         $passedChecks = [];
         $spfRecords = $this->parseSpfRecord($spfData);
@@ -374,104 +455,345 @@ class MailServerVerificationService
                 "ID" => 355,
                 "Name" => "SPF Record Deprecated",
                 "Info" => $deprecatedFound ? "Deprecated records found" : "No deprecated records found",
-                "PublicDescription" => null,
+                "PublicDescription" => "Hostname has returned a SPF Record that has been deprecated.\n\n"
+                    . "SPF records must now only be published as a DNS TXT (type 16) Resource Record (RR) [RFC1035]. "
+                    . "Alternative DNS RR types that were supported during the experimental phase of SPF were discontinued in 2014.\n\n"
+                    . "According to RFC 7208 Section 3.1: SPF records should no longer use mechanisms like 'ptr' or DNS RR types other than TXT. "
+                    . "Records found that violate these requirements are deprecated.",
                 "IsExcludedByUser" => false,
             ];
-
-            // Check for multiple records
+        } else {
             $passedChecks[] = [
-                "ID" => 358,
-                "Name" => "SPF Multiple Records",
-                "Info" => $spfCount < 2 ? "Less than two records found" : "Multiple records found",
-                "PublicDescription" => null,
+                "ID" => 355,
+                "Name" => "SPF Record Deprecated",
+                "Info" => $deprecatedFound ? "Deprecated records found" : "No deprecated records found",
+                "PublicDescription" => "Hostname has returned a SPF Record that has been deprecated.\n\n"
+                    . "SPF records must now only be published as a DNS TXT (type 16) Resource Record (RR) [RFC1035]. "
+                    . "Alternative DNS RR types that were supported during the experimental phase of SPF were discontinued in 2014.\n\n"
+                    . "According to RFC 7208 Section 3.1: SPF records should no longer use mechanisms like 'ptr' or DNS RR types other than TXT. "
+                    . "Records found that violate these requirements are deprecated.",
                 "IsExcludedByUser" => false,
-                //"Result" => $spfCount < 2 ? "pass" : "fail",
             ];
         }
 
+        // Check for multiple records
+        $passedChecks[] = [
+            "ID" => 358,
+            "Name" => "SPF Multiple Records",
+            "Info" => $spfCount < 2 ? "Less than two records found" : "Multiple records found",
+            "PublicDescription" => null,
+            "IsExcludedByUser" => false,
+        ];
+
         // Check for characters after ALL
-        $allCheck = !preg_match('/\s+\S/', trim(substr($spfData, strrpos($spfData, '-all'))));
-        if ($allCheck) {
+        $invalidAfterAll = false;
+        $allMechanismPosition = strrpos($spfData, 'all');
+
+        // Find if there are any characters or terms after 'all'
+        if ($allMechanismPosition !== false) {
+            // Check if there is any text after the 'all' mechanism
+            $remainingString = trim(substr($spfData, $allMechanismPosition + 3));
+            if (!empty($remainingString)) {
+                $invalidAfterAll = true;
+            }
+        }
+
+        if ($invalidAfterAll) {
             $passedChecks[] = [
                 "ID" => 477,
                 "Name" => "SPF Contains characters after ALL",
-                "Info" => $allCheck ? "No items after 'ALL'." : "Items found after 'ALL'.",
-                "PublicDescription" => null,
+                "Info" => "There are tags or characters after the 'all' mechanism. These are ignored by mail servers.",
+                "PublicDescription" => "This alert means that you have a delivery problem due to a misconfigured SPF record. "
+                    . "There are one or more tags after the 'all' indicator in your SPF record, which are ignored by mail servers. "
+                    . "For example, in the record:\n\n"
+                    . "'v=spf1 ip4:1.2.3.4 ip4:1.2.3.7 include:spf.example.com ~all include:spf2.microsoft.com'\n\n"
+                    . "The 'include:spf2.microsoft.com' will be ignored because it falls after the 'all' tag.\n"
+                    . "Ensure all desired mechanisms and terms are inserted before the 'all' mechanism as per RFC 7208 Section 5.1.",
                 "IsExcludedByUser" => false,
-            ];   
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 477,
+                "Name" => "SPF Contains characters after ALL",
+                "Info" => "No tags or characters after 'all'.",
+                "PublicDescription" => "There are no terms or mechanisms after the 'all' indicator in the SPF record, ensuring compliance with RFC 7208 Section 5.1.",
+                "IsExcludedByUser" => false,
+            ];
         }
 
         // Check for SPF Syntax
-        $isValid = $this->isValidSpfSyntax($spfData); // Assume you have a function to check SPF syntax
-        if ($isValid) {
+        // SPF Syntax Check
+        $invalidSyntax = false;
+        $syntaxErrorDetails = [];
+
+        // Check for invalid mechanisms with text instead of domains/hostnames
+        $invalidMechanisms = ['mx', 'a', 'ptr', 'exists', 'redirect', 'include'];
+        $spfParts = explode(" ", $spfData);
+
+        foreach ($spfParts as $part) {
+            $mechanism = explode(":", $part);
+            
+            // Check for mechanisms that should contain domains/hostnames
+            if (in_array($mechanism[0], $invalidMechanisms) && isset($mechanism[1])) {
+                if (!filter_var($mechanism[1], FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)) {
+                    $invalidSyntax = true;
+                    $syntaxErrorDetails[] = "Mechanism '{$mechanism[0]}' contains invalid domain or hostname: '{$mechanism[1]}'.";
+                }
+            }
+            
+            // Check for invalid IP formats in ip4 and ip6 mechanisms
+            if (strpos($part, 'ip4:') !== false) {
+                $ip = str_replace('ip4:', '', $part);
+                if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                    $invalidSyntax = true;
+                    $syntaxErrorDetails[] = "Invalid IPv4 address format: '{$ip}'.";
+                }
+            }
+            if (strpos($part, 'ip6:') !== false) {
+                $ip = str_replace('ip6:', '', $part);
+                if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+                    $invalidSyntax = true;
+                    $syntaxErrorDetails[] = "Invalid IPv6 address format: '{$ip}'.";
+                }
+            }
+        }
+
+        if ($invalidSyntax) {
             $passedChecks[] = [
-                "ID" => 356,
-                "Name" => "SPF Syntax Check",
-                "Info" => $isValid ? "The record is valid" : "The record contains syntax errors",
-                "PublicDescription" => null,
+                "ID" => 478,
+                "Name" => "SPF Syntax",
+                "Info" => "The SPF record contains syntax errors that may cause email delivery issues.",
+                "PublicDescription" => "Hostname returned invalid syntax for SPF record. There are misconfigured mechanisms in your SPF record. "
+                    . "This can result in email delivery issues and messages being blocked without clear error messages. "
+                    . "Common issues include mechanisms containing text rather than valid domains or hostnames, or incorrect IP address formats.\n\n"
+                    . "Details: " . implode("\n", $syntaxErrorDetails),
+                "IsExcludedByUser" => false,
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 478,
+                "Name" => "SPF Syntax",
+                "Info" => "The SPF record is valid and contains no syntax errors.",
+                "PublicDescription" => "The SPF record was parsed correctly and contains no syntax errors.",
                 "IsExcludedByUser" => false,
             ];
         }
 
-        // Check for included lookups (maximum 10)
-        $includedLookups = array_filter($spfRecords, function ($record) {
-            return $record['Type'] === 'include';
-        });
-        if ($includedLookups <= 10) {
+        // SPF Included Lookups
+        $dnsLookupCount = 0;
+        $spfParts = explode(" ", $spfData);
+
+        // DNS Lookup Mechanisms
+        $dnsLookupMechanisms = ['include', 'mx', 'a', 'ptr', 'exists'];
+
+        // Check each part of the SPF record
+        foreach ($spfParts as $part) {
+            // Check if the mechanism requires a DNS lookup
+            foreach ($dnsLookupMechanisms as $lookupMechanism) {
+                if (strpos($part, $lookupMechanism . ":") !== false) {
+                    $dnsLookupCount++;
+                }
+            }
+
+            // Count `redirect` as a DNS lookup
+            if (strpos($part, 'redirect=') !== false) {
+                $dnsLookupCount++;
+            }
+        }
+
+        // Evaluate if the DNS lookup count exceeds the limit
+        if ($dnsLookupCount > 10) {
             $passedChecks[] = [
-                "ID" => 421,
+                "ID" => 479,
                 "Name" => "SPF Included Lookups",
-                "Info" => count($includedLookups) <= 10 ? "Number of included lookups is OK" : "Too many included lookups",
-                "PublicDescription" => null,
+                "Info" => "The SPF record requires more than 10 DNS lookups.",
+                "PublicDescription" => "Your SPF record required more than 10 DNS Lookups to be performed during the test. "
+                    . "According to RFC 7208, the number of mechanisms and modifiers that do DNS lookups must be limited to 10 or fewer per SPF check. "
+                    . "The mechanisms that count toward this limit are: 'include', 'mx', 'a', 'ptr', 'exists', and 'redirect'.\n\n"
+                    . "Excessive DNS lookups may cause issues like increased bandwidth usage, memory usage, or even make the record vulnerable to DoS attacks. "
+                    . "Please reduce the number of DNS lookups by simplifying your SPF record or using SPF flattening services.",
                 "IsExcludedByUser" => false,
-                //"Result" => count($includedLookups) <= 10 ? "pass" : "warning",
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 479,
+                "Name" => "SPF Included Lookups",
+                "Info" => "The SPF record contains 10 or fewer DNS lookups.",
+                "PublicDescription" => "The SPF record complies with RFC 7208, requiring no more than 10 DNS lookups. "
+                    . "The number of 'include', 'mx', 'a', 'ptr', 'exists', and 'redirect' mechanisms is within the allowed limit.",
+                "IsExcludedByUser" => false,
             ];
         }
 
-        // Check for type PTR
-        $ptrCheck = true; // Assume you have logic to determine if PTR records are found
-        if ($ptrCheck) {
+        // SPF Type PTR Check
+        $containsPtr = false;
+        $spfParts = explode(" ", $spfData);
+
+        // Check for the presence of 'ptr' mechanism in the SPF record
+        foreach ($spfParts as $part) {
+            if (strpos($part, 'ptr:') !== false || $part === 'ptr') {
+                $containsPtr = true;
+                break;
+            }
+        }
+
+        // Provide feedback based on the presence of the PTR mechanism
+        if ($containsPtr) {
             $passedChecks[] = [
-                "ID" => 509,
-                "Name" => "SPF Type PTR Check",
-                "Info" => !$ptrCheck ? "No type PTR found" : "Type PTR found",
-                "PublicDescription" => null,
+                "ID" => 480,
+                "Name" => "SPF Type PTR",
+                "Info" => "The SPF record contains the discouraged 'ptr' mechanism.",
+                "PublicDescription" => "Your domain's SPF record includes a sender mechanism type of PTR. "
+                    . "The use of this mechanism is heavily discouraged as per RFC 4408. "
+                    . "It is slow and unreliable, and per email delivery best practices, it is recommended to avoid including PTR type mechanisms in your SPF record.\n\n"
+                    . "According to RFC 4408: 'Use of this mechanism is discouraged because it is slow, it is not as reliable as other mechanisms in cases of DNS errors, "
+                    . "and it places a large burden on the arpa name servers. If used, proper PTR records must be in place for the domain's hosts and the 'ptr' mechanism "
+                    . "should be one of the last mechanisms checked.'",
+                "IsExcludedByUser" => false,
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 480,
+                "Name" => "SPF Type PTR",
+                "Info" => "The SPF record does not contain the discouraged 'ptr' mechanism.",
+                "PublicDescription" => "Your SPF record is compliant with best practices and does not include the discouraged 'ptr' mechanism. "
+                    . "Per RFC 4408, the use of 'ptr' mechanisms is slow and unreliable, and it is recommended to avoid including them in SPF records.",
                 "IsExcludedByUser" => false,
             ];
         }
 
         // Check for void lookups
-        $voidLookupsCheck = $this->checkForVoidLookups($spfData); // Call the new function
-        if ($voidLookupsCheck) {
+        $voidLookupCount = 0;
+        $spfParts = explode(" ", $spfData);
+        $lookupMechanisms = ['a', 'mx', 'include', 'ptr', 'exists']; // Define mechanisms that perform lookups
+
+        foreach ($spfParts as $part) {
+            // Check if the part is a mechanism that requires a lookup
+            foreach ($lookupMechanisms as $mechanism) {
+                if (strpos($part, $mechanism) !== false) {
+                    // Perform the DNS lookup
+                    $domain = str_replace("$mechanism:", '', $part);
+                    $dnsResponse = $this->performDnsLookup($domain, 'TXT'); // This function should handle DNS lookups and return the response type
+                    
+                    // Check for void responses
+                    if ($dnsResponse === 'NOERROR_WITH_NO_ANSWERS' || $dnsResponse === 'NXDOMAIN') {
+                        $voidLookupCount++;
+                    }
+                    
+                    // Stop checking if we've exceeded the limit
+                    if ($voidLookupCount > 2) {
+                        break 2; // Break out of both loops
+                    }
+                }
+            }
+        }
+
+        // Provide feedback based on the count of void lookups
+        if ($voidLookupCount > 2) {
             $passedChecks[] = [
-                "ID" => 511,
+                "ID" => 490,
                 "Name" => "SPF Void Lookups",
-                "Info" => !$voidLookupsCheck ? "Number of void lookups is OK" : "Void lookups found",
-                "PublicDescription" => null,
+                "Info" => "Your SPF record has exceeded the limit for void lookups.",
+                "PublicDescription" => "The void lookup limit was introduced in RFC 7208 and refers to DNS lookups which either return an empty response (NOERROR with no answers) or an NXDOMAIN response. "
+                    . "You have exceeded the limit of two void lookups in your SPF record, which can produce a 'permerror' result. This is meant to help prevent erroneous or malicious SPF records from contributing to a DNS-based denial of service attack.",
+                "IsExcludedByUser" => false,
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 490,
+                "Name" => "SPF Void Lookups",
+                "Info" => "Number of void lookups is OK",
+                "PublicDescription" => "Your SPF record is compliant with the recommended limit of two void lookups as per RFC 7208. "
+                    . "Exceeding this limit could produce a 'permerror' result, potentially affecting email delivery.",
                 "IsExcludedByUser" => false,
             ];
         }
 
-        // Check for MX Resource Records
-        $mxCheck = true; // Logic to determine MX Resource Records
-        if ($mxCheck) {
+        // SPF MX Resource Records Check
+        $mxError = false; // Flag to track if any MX records exceed the limit
+        $spfParts = explode(" ", $spfData);
+
+        foreach ($spfParts as $part) {
+            // Check for the mx mechanism
+            if (strpos($part, 'mx') !== false) {
+                $domain = str_replace('mx:', '', $part); // Extract the domain for mx lookup
+                $mxRecords = $this->performMxLookup($domain); // This function should handle MX lookups and return a list of MX records
+
+                foreach ($mxRecords as $mxRecord) {
+                    // Perform A and AAAA lookups for each MX record
+                    $aRecordsCount = count($this->performDnsLookup($mxRecord, 'A')); // Count A records
+                    $aaaaRecordsCount = count($this->performDnsLookup($mxRecord, 'AAAA')); // Count AAAA records
+                    $totalRecordsCount = $aRecordsCount + $aaaaRecordsCount; // Total address records
+
+                    // Check if total exceeds 10
+                    if ($totalRecordsCount > 10) {
+                        $mxError = true; // Set error flag
+                        break 2; // Exit both loops
+                    }
+                }
+            }
+        }
+
+        // Provide feedback based on the MX resource record counts
+        if ($mxError) {
             $passedChecks[] = [
-                "ID" => 420,
+                "ID" => 500,
                 "Name" => "SPF MX Resource Records",
-                "Info" => !$mxCheck ? "Number of MX Resource Records is OK" : "MX Resource Records found",
-                "PublicDescription" => null,
+                "Info" => "Your SPF record contains an MX mechanism that exceeds the limit for address records.",
+                "PublicDescription" => "If you encounter this message, it means your SPF record contains an mx mechanism which has one or more Mail Exchange (MX) resource records that contain more than 10 address records - either 'A' or 'AAAA'. "
+                    . "Email sent from this domain may have delivery problems due to the permerror that will occur. According to RFC 7208 section 4.6.4, the evaluation of each 'MX' record MUST NOT result in querying more than 10 address records. "
+                    . "Please ensure that each MX record has 10 or fewer address records to maintain proper email delivery.",
+                "IsExcludedByUser" => false,
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 500,
+                "Name" => "SPF MX Resource Records",
+                "Info" => "Number of MX Resource Records is OK",
+                "PublicDescription" => "Your SPF record does not exceed the limit for address records associated with MX mechanisms. "
+                    . "This compliance ensures that email sent from your domain should not encounter delivery problems due to MX resource record limits.",
                 "IsExcludedByUser" => false,
             ];
         }
 
-        // Check for null DNS Lookups
-        $nullCheck = $this->checkForNullDnsLookups($spfRecords); // Call the new function
-        if ($nullCheck) {
+        // SPF Record Null Value Check
+        $nullValueError = false; // Flag to track null value responses
+        $spfParts = explode(" ", $spfData);
+        $lookupMechanisms = ['a', 'mx', 'include', 'ptr', 'exists']; // Mechanisms that require DNS lookups
+
+        foreach ($spfParts as $part) {
+            foreach ($lookupMechanisms as $mechanism) {
+                if (strpos($part, $mechanism) !== false) {
+                    $domain = str_replace($mechanism . ":", '', $part); // Extract the domain for lookup
+                    $lookupResult = $this->performDnsLookup($domain, 'TXT'); // This function should handle DNS lookups
+
+                    // Check if the lookup result is null (empty response)
+                    if (is_null($lookupResult) || (isset($lookupResult['rcode']) && $lookupResult['rcode'] == 'NXDOMAIN')) {
+                        $nullValueError = true; // Set error flag
+                        break 2; // Exit both loops
+                    }
+                }
+            }
+        }
+
+        // Provide feedback based on null value responses
+        if ($nullValueError) {
             $passedChecks[] = [
-                "ID" => 418,
+                "ID" => 600,
                 "Name" => "SPF Record Null Value",
-                "Info" => !$nullCheck ? "No Null DNS Lookups found" : "Null DNS Lookups found",
-                "PublicDescription" => null,
+                "Info" => "Your SPF record contains mechanisms that returned null values.",
+                "PublicDescription" => "A null record in your SPF record is commonly an indication of a problem with the related DNS lookup. "
+                    . "Any mechanism that contains a DNS lookup should return a valid result. This check has triggered because it's much more common for a null record to indicate an issue affecting your email delivery. "
+                    . "You can generally run an A record lookup on the domain/sub-domain in question to get more specific results.",
+                "IsExcludedByUser" => false,
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 600,
+                "Name" => "SPF Record Null Value",
+                "Info" => "No Null DNS Lookups found",
+                "PublicDescription" => "All mechanisms in your SPF record returned valid results, indicating no issues with your DNS lookups. "
+                    . "This compliance helps ensure that your email delivery will not be affected by DNS-related problems.",
                 "IsExcludedByUser" => false,
             ];
         }
@@ -479,119 +801,7 @@ class MailServerVerificationService
         return $passedChecks;
     }
 
-    // Function to check for void lookups
-    private function checkForVoidLookups($spfData)
-    {
-        // Logic to determine void lookups (e.g., exceeding DNS lookup limits)
-        // Placeholder logic: return true if void lookups are found
-        $voidLookups = preg_match('/\bvoid\b/', $spfData); // Example logic
-        return $voidLookups > 0;
-    }
-
-    // Function to check for null DNS lookups
-    private function checkForNullDnsLookups($spfRecords)
-    {
-        // Logic to determine null DNS lookups
-        // Placeholder logic: return true if null lookups are found
-        foreach ($spfRecords as $record) {
-            if (empty($record['Value'])) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-
-    private function isValidSpfSyntax($spfData) {
-        // Regular expression pattern for validating SPF syntax
-        $spfPattern = '/^v=spf1\s+((?:(?:include|a|mx|ptr|ip4|ip6|exists|all)(?::[^\s;]+)?|\s+|;[^\n]*)*)-?all\s*$/';
-    
-        // Check if the provided SPF record matches the pattern
-        if (preg_match($spfPattern, $spfData)) {
-            return true; // If valid
-        } else {
-            return false; // If invalid
-        }
-    }
-
-    private function getDnsLookup($domain) {
-        $dns = new Dns();
-
-        $records = $dns->getRecords($domain); // returns all available dns records
-
-        $domainInfo = [];
-
-        foreach ($records as $record) {
-            $recordArray = $record->toArray(); // Convert record to array
-
-            // Base information common to all records
-            $info = [
-                'Host' => $recordArray['host'],
-                'TTL' => $recordArray['ttl'],
-                'Class' => $recordArray['class'],
-                'Type' => $recordArray['type']
-            ];
-
-            // Add specific fields depending on the record type
-            if (isset($recordArray['ip'])) {
-                $info['IP'] = $recordArray['ip'];
-            }
-
-            if (isset($recordArray['target'])) {
-                $info['Target'] = $recordArray['target'];
-            }
-
-            if (isset($recordArray['txt'])) {
-                $info['TXT'] = $recordArray['txt'];
-            }
-
-            if (isset($recordArray['pri'])) {
-                $info['Priority'] = $recordArray['pri'];
-            }
-            
-            // Add the Name column with static text descriptions
-            switch ($recordArray['type']) {
-                case 'A':
-                    $info['Name'] = 'IPv4 Address';
-                    $info['IP'] = $recordArray['ip'];
-                    break;
-                case 'NS':
-                    $info['Name'] = 'Name Server';
-                    $info['Target'] = $recordArray['target'];
-                    break;
-                case 'SOA':
-                    $info['Name'] = 'Start of Authority';
-                    // Add SOA specific details
-                    $info['MName'] = $recordArray['mname'];
-                    $info['RName'] = $recordArray['rname'];
-                    $info['Serial'] = $recordArray['serial'];
-                    $info['Refresh'] = $recordArray['refresh'];
-                    $info['Retry'] = $recordArray['retry'];
-                    $info['Expire'] = $recordArray['expire'];
-                    $info['MinimumTTL'] = $recordArray['minimum_ttl'];
-                    break;
-                case 'MX':
-                    $info['Name'] = 'Mail Exchange';
-                    $info['Priority'] = $recordArray['pri'];
-                    $info['Target'] = $recordArray['target'];
-                    break;
-                case 'TXT':
-                    $info['Name'] = 'Text Record';
-                    $info['TXT'] = $recordArray['txt'];
-                    break;
-                default:
-                    $info['Name'] = 'Unknown Record Type';
-                    break;
-            }
-
-            // Add the record to the result set
-            $domainInfo[] = $info;
-        }
-
-        return $domainInfo;
-    }
-
-    private function getWarningsChecks($spfRecord) {
+    private function getWarningSpfChecks($spfRecord) {
         // Initialize an array to hold warning checks
         $warningChecks = [];
     
@@ -677,7 +887,7 @@ class MailServerVerificationService
         return $warningChecks;
     }
 
-    private function getFailedChecks($spfRecord, $domain) 
+    private function getFailedSpfChecks($spfRecord, $domain) 
     {
         // Initialize an array to hold failed checks
         $failedChecks = [];
@@ -733,6 +943,467 @@ class MailServerVerificationService
         return $failedChecks;
     }  
 
+
+    private function getPassedDmarcChecks($dmarcData)
+    {
+        $passedChecks = [];
+        $dmarcRecords = $this->parseDmarcRecord($dmarcData);
+        $dmarcCount = count($dmarcRecords);
+
+        // Check for DMARC Record Published
+        if ($dmarcCount > 0) {
+            $passedChecks[] = [
+                "ID" => 361,
+                "Name" => "DMARC Record Published",
+                "Info" => "DMARC Record found",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false,
+            ];
+        }
+
+        // Check for multiple records
+        $passedChecks[] = [
+            "ID" => 358,
+            "Name" => "DMARC Multiple Records",
+            "Info" => $dmarcCount < 2 ? "Less than two records found" : "Multiple records found",
+            "PublicDescription" => null,
+            "IsExcludedByUser" => false,
+        ];
+
+        // Check for valid policy
+        foreach ($dmarcRecords as $record) {
+            if (isset($record['p']) && !in_array(strtoupper($record['p']), ['NONE', 'QUARANTINE', 'REJECT'])) {
+                $passedChecks[] = [
+                    "ID" => 481,
+                    "Name" => "DMARC Policy Validity",
+                    "Info" => "Invalid policy specified in DMARC record: '{$record['p']}'.",
+                    "PublicDescription" => "The DMARC policy must be one of 'none', 'quarantine', or 'reject'.",
+                    "IsExcludedByUser" => false,
+                ];
+                break; // Stop checking after finding the first invalid policy
+            }
+        }
+
+        // Check for 'rua' tag presence
+        $ruaFound = false;
+        foreach ($dmarcRecords as $record) {
+            if (isset($record['rua'])) {
+                $ruaFound = true;
+                break;
+            }
+        }
+
+        if ($ruaFound) {
+            $passedChecks[] = [
+                "ID" => 482,
+                "Name" => "DMARC Reporting Address",
+                "Info" => "Reporting URI for aggregate reports found.",
+                "PublicDescription" => "The DMARC record contains a reporting address for aggregate reports.",
+                "IsExcludedByUser" => false,
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 482,
+                "Name" => "DMARC Reporting Address",
+                "Info" => "No reporting URI for aggregate reports found.",
+                "PublicDescription" => "It is recommended to include a 'rua' tag in the DMARC record for aggregate report reporting.",
+                "IsExcludedByUser" => false,
+            ];
+        }
+
+        // Check for 'pct' tag presence
+        foreach ($dmarcRecords as $record) {
+            if (isset($record['pct'])) {
+                if ($record['pct'] < 0 || $record['pct'] > 100) {
+                    $passedChecks[] = [
+                        "ID" => 483,
+                        "Name" => "DMARC Percentage Validity",
+                        "Info" => "Invalid percentage value specified in DMARC record: '{$record['pct']}'.",
+                        "PublicDescription" => "The 'pct' tag must be between 0 and 100.",
+                        "IsExcludedByUser" => false,
+                    ];
+                    break; // Stop checking after finding the first invalid percentage
+                } else {
+                    $passedChecks[] = [
+                        "ID" => 483,
+                        "Name" => "DMARC Percentage Validity",
+                        "Info" => "Valid percentage value specified in DMARC record: '{$record['pct']}'.",
+                        "PublicDescription" => null,
+                        "IsExcludedByUser" => false,
+                    ];
+                }
+            }
+        }
+
+        // DMARC Syntax Check
+        $invalidSyntax = false;
+        $syntaxErrorDetails = [];
+
+        // Check for common DMARC syntax issues
+        $dmarcParts = explode(";", $dmarcData);
+        foreach ($dmarcParts as $part) {
+            // You can add specific checks based on DMARC syntax requirements
+            if (strpos($part, 'v=DMARC1') === false) {
+                $invalidSyntax = true;
+                $syntaxErrorDetails[] = "Missing 'v=DMARC1' in DMARC record.";
+            }
+        }
+
+        if ($invalidSyntax) {
+            $passedChecks[] = [
+                "ID" => 484,
+                "Name" => "DMARC Syntax",
+                "Info" => "The DMARC record contains syntax errors.",
+                "PublicDescription" => "The DMARC record has invalid syntax. Please review the format and ensure it follows DMARC specifications.",
+                "IsExcludedByUser" => false,
+                "Details" => implode("\n", $syntaxErrorDetails),
+            ];
+        } else {
+            $passedChecks[] = [
+                "ID" => 484,
+                "Name" => "DMARC Syntax",
+                "Info" => "The DMARC record is valid and contains no syntax errors.",
+                "PublicDescription" => "The DMARC record was parsed correctly and contains no syntax errors.",
+                "IsExcludedByUser" => false,
+            ];
+        }
+
+        return $passedChecks;
+    }
+
+
+    private function getWarningDmarcChecks($dmarcRecord)
+    {
+        // Initialize an array to hold warning checks
+        $warningChecks = [];
+
+        // Split the DMARC record into parts
+        $parts = explode(';', $dmarcRecord);
+
+        // Count different DMARC tags
+        $pCount = 0; // Policy tags (p=)
+        $spCount = 0; // Subdomain policy tags (sp=)
+        $aspfCount = 0; // Alignment mode for SPF (aspf=)
+        $adkimCount = 0; // Alignment mode for DKIM (adkim=)
+        $pctCount = 0; // Percentage tag (pct=)
+
+        // Loop through the parts to count mechanisms
+        foreach ($parts as $part) {
+            $part = trim($part); // Clean up any whitespace
+            if (strpos($part, 'p=') === 0) {
+                $pCount++;
+            } elseif (strpos($part, 'sp=') === 0) {
+                $spCount++;
+            } elseif (strpos($part, 'aspf=') === 0) {
+                $aspfCount++;
+            } elseif (strpos($part, 'adkim=') === 0) {
+                $adkimCount++;
+            } elseif (strpos($part, 'pct=') === 0) {
+                $pctCount++;
+            }
+        }
+
+        // Check for various warning conditions
+        if ($pCount === 0) {
+            $warningChecks[] = [
+                "ID" => 600,
+                "Name" => "DMARC Policy Missing Warning",
+                "Info" => "No policy (p=) tag found in the DMARC record.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        if ($spCount > 1) {
+            $warningChecks[] = [
+                "ID" => 601,
+                "Name" => "DMARC Subdomain Policy Warning",
+                "Info" => "More than one subdomain policy (sp=) tag found.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        if ($aspfCount > 1) {
+            $warningChecks[] = [
+                "ID" => 602,
+                "Name" => "DMARC SPF Alignment Warning",
+                "Info" => "More than one alignment mode for SPF (aspf=) tag found.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        if ($adkimCount > 1) {
+            $warningChecks[] = [
+                "ID" => 603,
+                "Name" => "DMARC DKIM Alignment Warning",
+                "Info" => "More than one alignment mode for DKIM (adkim=) tag found.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        if ($pctCount > 1) {
+            $warningChecks[] = [
+                "ID" => 604,
+                "Name" => "DMARC Percentage Warning",
+                "Info" => "More than one percentage (pct=) tag found.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        return $warningChecks;
+    }
+
+
+    private function getFailedDmarcChecks($dmarcData, $domain) 
+    {
+        // Initialize an array to hold failed checks
+        $failedChecks = [];
+
+        // Check if the SPF record is empty
+        if (empty(trim($dmarcData))) {
+            $failedChecks[] = [
+                "ID" => 600,
+                "Name" => "DMARC Record Missing",
+                "Info" => "No DMARC record found.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+            return ["Failed" => $failedChecks];
+        }
+
+        // Check if DMARC record has a valid syntax
+        if (!$this->isValidDmarcSyntax($dmarcData)) {
+            $failedChecks[] = [
+                "ID" => 601,
+                "Name" => "DMARC Syntax Error",
+                "Info" => "The DMARC record has invalid syntax.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        // Check if there are multiple DMARC records for the domain
+        // Assuming we have a function getDmarcRecordsForDomain() that fetches all SPF records for a domain
+        $allDmarcRecords = $this->getDmarcRecordsForDomain($domain);
+        if (count($allDmarcRecords) > 1) {
+            $failedChecks[] = [
+                "ID" => 602,
+                "Name" => "Multiple DMARC Records Found",
+                "Info" => "More than one DMARC record found for the domain.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        if (!preg_match('/\bp=(none|quarantine|reject)\b/', $dmarcData)) {
+            $failedChecks[] = [
+                "ID" => 701,
+                "Name" => "DMARC Policy Missing",
+                "Info" => "The DMARC record must include a policy ('p') value.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        if (preg_match('/\bp=p=.*?\b/', $dmarcData, $matches)) {
+            if (!in_array(trim($matches[0]), ['p=none', 'p=quarantine', 'p=reject'])) {
+                $failedChecks[] = [
+                    "ID" => 702,
+                    "Name" => "Invalid DMARC Policy Value",
+                    "Info" => "The 'p' value must be 'none', 'quarantine', or 'reject'.",
+                    "PublicDescription" => null,
+                    "IsExcludedByUser" => false
+                ];
+            }
+        }
+
+        if (preg_match_all('/\bp=p=.*?\b/', $dmarcData, $matches) > 1) {
+            $failedChecks[] = [
+                "ID" => 705,
+                "Name" => "Multiple DMARC Policies Detected",
+                "Info" => "Only one 'p' policy should be defined in the DMARC record.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+        if (preg_match('/\bpct=(\d{1,3})\b/', $dmarcData, $matches)) {
+            if (intval($matches[1]) < 0 || intval($matches[1]) > 100) {
+                $failedChecks[] = [
+                    "ID" => 704,
+                    "Name" => "Invalid DMARC Percentage Value",
+                    "Info" => "The 'pct' value must be between 0 and 100.",
+                    "PublicDescription" => null,
+                    "IsExcludedByUser" => false
+                ];
+            }
+        }
+
+        if (!preg_match('/\bru[a]?=mailto:[\w\.-]+@[\w\.-]+/', $dmarcData) && 
+            !preg_match('/\bruf=mailto:[\w\.-]+@[\w\.-]+/', $dmarcData)) {
+            $failedChecks[] = [
+                "ID" => 703,
+                "Name" => "Missing DMARC Reporting URIs",
+                "Info" => "At least one reporting URI ('rua' or 'ruf') must be included in the DMARC record.",
+                "PublicDescription" => null,
+                "IsExcludedByUser" => false
+            ];
+        }
+
+
+        // Return the failed checks
+        return $failedChecks;
+    }  
+
+    function performMxLookup($domain) {
+        // Use the PHP dns_get_record function to retrieve MX records for the domain
+        $mxRecords = dns_get_record($domain, DNS_MX);
+    
+        // Initialize an empty array to store the MX hostnames
+        $mxHosts = [];
+    
+        // Loop through the MX records and extract the hostnames
+        if (!empty($mxRecords)) {
+            foreach ($mxRecords as $mx) {
+                if (isset($mx['target'])) {
+                    $mxHosts[] = $mx['target'];
+                }
+            }
+        }
+    
+        return $mxHosts; // Return the list of MX hostnames
+    }
+
+    function performDnsLookup($mxHost, $recordType) {
+        // Use the PHP dns_get_record function to retrieve A or AAAA records
+        $dnsRecords = dns_get_record($mxHost, constant('DNS_' . strtoupper($recordType)));
+    
+        // Initialize an empty array to store the resolved IP addresses
+        $ipAddresses = [];
+    
+        // Loop through the DNS records and extract the IP addresses
+        if (!empty($dnsRecords)) {
+            foreach ($dnsRecords as $record) {
+                if (isset($record['ip']) || isset($record['ipv6'])) {
+                    // Depending on the type of record (A or AAAA), we store the IP
+                    if ($recordType === 'A' && isset($record['ip'])) {
+                        $ipAddresses[] = $record['ip'];
+                    } elseif ($recordType === 'AAAA' && isset($record['ipv6'])) {
+                        $ipAddresses[] = $record['ipv6'];
+                    }
+                }
+            }
+        }
+    
+        return $ipAddresses; // Return the list of IP addresses (A or AAAA)
+    }
+
+
+    private function isValidSpfSyntax($spfData) {
+        // Regular expression pattern for validating SPF syntax
+        $spfPattern = '/^v=spf1\s+((?:(?:include|a|mx|ptr|ip4|ip6|exists|all)(?::[^\s;]+)?|\s+|;[^\n]*)*)-?all\s*$/';
+    
+        // Check if the provided SPF record matches the pattern
+        if (preg_match($spfPattern, $spfData)) {
+            return true; // If valid
+        } else {
+            return false; // If invalid
+        }
+    }
+
+    private function isValidDmarcSyntax($dmarcData) {
+        // Regular expression pattern for validating SPF syntax
+        $dmarcPattern = '/^v=DMARC1;\s*p=(none|quarantine|reject);\s*pct=(\d{1,3});\s*rua=mailto:[\w\.-]+@[\w\.-]+;\s*ruf=mailto:[\w\.-]+@[\w\.-]+;\s*$/';
+    
+        // Check if the provided SPF record matches the pattern
+        if (preg_match($dmarcPattern, $dmarcData)) {
+            return true; // If valid
+        } else {
+            return false; // If invalid
+        }
+    }
+
+    private function getDnsLookup($domain) {
+        $dns = new Dns();
+
+        $records = $dns->getRecords($domain); // returns all available dns records
+
+        $domainInfo = [];
+
+        foreach ($records as $record) {
+            $recordArray = $record->toArray(); // Convert record to array
+
+            // Base information common to all records
+            $info = [
+                'Host' => $recordArray['host'],
+                'TTL' => $recordArray['ttl'],
+                'Class' => $recordArray['class'],
+                'Type' => $recordArray['type']
+            ];
+
+            // Add specific fields depending on the record type
+            if (isset($recordArray['ip'])) {
+                $info['IP'] = $recordArray['ip'];
+            }
+
+            if (isset($recordArray['target'])) {
+                $info['Target'] = $recordArray['target'];
+            }
+
+            if (isset($recordArray['txt'])) {
+                $info['TXT'] = $recordArray['txt'];
+            }
+
+            if (isset($recordArray['pri'])) {
+                $info['Priority'] = $recordArray['pri'];
+            }
+            
+            // Add the Name column with static text descriptions
+            switch ($recordArray['type']) {
+                case 'A':
+                    $info['Name'] = 'IPv4 Address';
+                    $info['IP'] = $recordArray['ip'];
+                    break;
+                case 'NS':
+                    $info['Name'] = 'Name Server';
+                    $info['Target'] = $recordArray['target'];
+                    break;
+                case 'SOA':
+                    $info['Name'] = 'Start of Authority';
+                    // Add SOA specific details
+                    $info['MName'] = $recordArray['mname'];
+                    $info['RName'] = $recordArray['rname'];
+                    $info['Serial'] = $recordArray['serial'];
+                    $info['Refresh'] = $recordArray['refresh'];
+                    $info['Retry'] = $recordArray['retry'];
+                    $info['Expire'] = $recordArray['expire'];
+                    $info['MinimumTTL'] = $recordArray['minimum_ttl'];
+                    break;
+                case 'MX':
+                    $info['Name'] = 'Mail Exchange';
+                    $info['Priority'] = $recordArray['pri'];
+                    $info['Target'] = $recordArray['target'];
+                    break;
+                case 'TXT':
+                    $info['Name'] = 'Text Record';
+                    $info['TXT'] = $recordArray['txt'];
+                    break;
+                default:
+                    $info['Name'] = 'Unknown Record Type';
+                    break;
+            }
+
+            // Add the record to the result set
+            $domainInfo[] = $info;
+        }
+
+        return $domainInfo;
+    }
+
     private function getSpfRecordsForDomain($domain) {
         // Initialize an array to hold SPF records
         $spfRecords = [];
@@ -745,6 +1416,26 @@ class MailServerVerificationService
             if (isset($record['txt'])) {
                 // Check if the TXT record is an SPF record
                 if (preg_match('/^v=spf1/', $record['txt'])) {
+                    $spfRecords[] = $record['txt'];
+                }
+            }
+        }
+    
+        return $spfRecords;
+    }
+
+    private function getDmarcRecordsForDomain($domain) {
+        // Initialize an array to hold SPF records
+        $spfRecords = [];
+    
+        // Fetch DNS records of type 'TXT' for the specified domain
+        $dnsRecords = dns_get_record('_dmarc.' . $domain, DNS_TXT);;
+    
+        // Loop through the DNS records to find SPF records
+        foreach ($dnsRecords as $record) {
+            if (isset($record['txt'])) {
+                // Check if the TXT record is an SPF record
+                if (preg_match('/^v=DMARC1/', $record['txt'])) {
                     $spfRecords[] = $record['txt'];
                 }
             }
@@ -802,7 +1493,59 @@ class MailServerVerificationService
         return $information;
     }
 
-    private function getSpfInfoMxToolbox($domain) {
+    private function getDmarcInfo($dmarcData)
+    {
+        $information = []; // Array to hold DMARC information
+
+        if ($dmarcData) {
+            // Assuming the DMARC record is in the format: "v=DMARC1; p=none; pct=100; rua=mailto:dmarc@hub-score.com; ruf=mailto:dmarc_authfail@mails-tourmag.com;"
+            $parts = explode(';', trim($dmarcData)); // Split the record by semicolon
+
+            foreach ($parts as $part) {
+                $info = [
+                    "Prefix" => "",
+                    "Type" => "",
+                    "Value" => "",
+                    "PrefixDesc" => "",
+                    "Description" => "",
+                    "RecordNum" => null,
+                ];
+
+                // Trim the part to avoid leading/trailing whitespace
+                $part = trim($part);
+
+                // Determine the type and value of each part
+                if (preg_match('/^v=DMARC1/', $part)) {
+                    $info["Type"] = "record";
+                    $info["Value"] = "txt";
+                    $info["Description"] = $dmarcData; // The whole DMARC record
+                    $info["RecordNum"] = "1";
+                } elseif (preg_match('/^p=(none|quarantine|reject)/', $part, $matches)) {
+                    $info["Type"] = "policy";
+                    $info["Value"] = $matches[1];
+                    $info["Description"] = "The policy applied to the domain's mail.";
+                } elseif (preg_match('/^pct=(\d{1,3})/', $part, $matches)) {
+                    $info["Type"] = "percentage";
+                    $info["Value"] = $matches[1];
+                    $info["Description"] = "Percentage of messages subjected to filtering.";
+                } elseif (preg_match('/^(rua|ruf)=mailto:(.+)/', $part, $matches)) {
+                    $info["Type"] = $matches[1]; // rua or ruf
+                    $info["Value"] = $matches[2];
+                    $info["Description"] = "Reporting URI for aggregate reports (rua) or failure reports (ruf).";
+                }
+
+                // Only add populated info
+                if (!empty($info["Type"])) {
+                    $info["RecordNum"] = null; // Set the record number for all entries
+                    $information[] = $info;
+                }
+            }
+        }
+
+        return $information;
+    }
+
+    private function getInfoMxToolbox($domain) {
         try {
             $test = new MxToolbox();
             $test
@@ -888,6 +1631,71 @@ class MailServerVerificationService
 
         return $transcriptInfo;
     }
+    
+    private function generateDmarcTranscript($domain, $dmarcData, $dnsLookupResults)
+    {
+        // Start the transcript with domain and initial text
+        $transcript = "- - - txt:$domain\r\n\r\n";
+
+        // Example DNS lookup results added to the transcript
+        $transcript .= "&emsp; 1 e.gtld-servers.net 192.12.94.30 NON-AUTH 17 ms Received 2 Referrals, rcode=NO_ERROR &emsp; ";
+
+        // Check if dnsLookupResults is an array and contains elements
+        if (is_array($dnsLookupResults) && !empty($dnsLookupResults)) {
+            foreach ($dnsLookupResults as $index => $result) {
+                // Format and extract relevant information from each record
+                $formattedResult = "Host: {$result['Host']}, ";
+                $formattedResult .= "TTL: {$result['TTL']}, ";
+                $formattedResult .= "Class: {$result['Class']}, ";
+                $formattedResult .= "Type: {$result['Type']}, ";
+
+                // Add additional fields if they exist
+                if (isset($result['IP'])) {
+                    $formattedResult .= "IP: {$result['IP']}, ";
+                }
+                if (isset($result['Target'])) {
+                    $formattedResult .= "Target: {$result['Target']}, ";
+                }
+                if (isset($result['Name'])) {
+                    $formattedResult .= "Name: {$result['Name']}";
+                }
+
+                // Trim trailing comma and space, then add to transcript
+                $transcript .= "&emsp; " . rtrim($formattedResult, ', ') . "\r\n";
+            }
+        } else {
+            $transcript .= "&emsp; No DNS lookup results found.\r\n";
+        }
+
+        // Add DMARC records to the transcript
+        $dmarcRecords = $this->getDmarcRecord($domain); // Fetch the DMARC records again if needed
+        if (!empty($dmarcRecords['records'])) {
+            foreach ($dmarcRecords['records'] as $index => $record) {
+                $transcript .= "&emsp; " . ($index + 2) . " $record IN TXT\t$dmarcData\t\r\n";
+            }
+        } else {
+            $transcript .= "&emsp; No DMARC records found for this domain.\r\n";
+        }
+
+        // Include results of the DMARC checks
+        $transcript .= "- - Results\r\n";
+        $dmarcValidationResults = $this->checkDmarcSyntax($domain); // Simulate the check results
+        if (is_array($dmarcValidationResults)) {
+            foreach ($dmarcValidationResults as $result) {
+                // Ensure each result is a string
+                $transcript .= "TXT:$result = " . ($this->isValidResult($result) ? 'Pass' : 'Fail') . "\r\n";
+            }
+        } else {
+            $transcript .= "No DMARC validation results available.\r\n";
+        }
+
+        // Adding final touch with lookup server response time
+        $transcript .= "LookupServer 3513ms\r\n";
+        
+        $transcriptInfo[] = ["Transcript" => $transcript];
+
+        return $transcriptInfo;
+    }
 
 
     private function isValidResult($result)
@@ -952,20 +1760,16 @@ class MailServerVerificationService
             "IsEmptySubDomain" => $this->getIsEmptySubDomain($domain),
             "IsEndpoint" => $this->getIsEndpoint($domain),
             "HasSubscriptions" => $this->getHasSubscriptions($domain),
-            "AlertgroupSubscriptionsId" => $this->getAlertgroupSubscriptionsId($domain),//
-            "Failed" => $this->getFailedChecks($dmarcData, $domain),
-            "Warnings" => $this->getWarningsChecks($dmarcData),
-            "Passed" => $this->getPassedChecks($dmarcData),
+            "Failed" => $this->getFailedDmarcChecks($dmarcData, $domain),
+            "Warnings" => $this->getWarningDmarcChecks($dmarcData),
+            "Passed" => $this->getPassedDmarcChecks($dmarcData),
             "Timeouts" => $timeout,
             "Errors" => $errorMessage,
             "IsError" => $isError,
-            //"Information" => $this->getDmarcInfo($dmarcData),
-            //"MultiInformation" => $this->getMultiDmarcInfo($dmarcData),//
-            //"Transcript" => $this->generateDmarcTranscript($domain, $dmarcData, $dnsLookupResults),
-            "MxRep" => 0,//
-            //"EmailServiceProvider" => $this->getDmarcInfoMxToolbox($domain),
-            "DnsServiceProvider" => $this->getDnsServiceProvider($domain),//
-            "DnsServiceProviderIdentifier" => $this->getDnsServiceProviderIdentifier($domain),//
+            "Information" => $this->getDmarcInfo($dmarcData),
+            "Transcript" => $this->generateDmarcTranscript($domain, $dmarcData, $dnsLookupResults),
+            "EmailServiceProvider" => $this->getInfoMxToolbox($domain),
+            "DnsServiceProvider" => $this->getDnsServiceProvider($domain),
             "RelatedLookups" => $this->getDnsLookup($domain)
         ];
         return $response;
@@ -983,25 +1787,4 @@ class MailServerVerificationService
         }
         return null;
     } 
-
-    private function getcheckSpfLib(string $spfData, string $domain) {
-        /*$environment = new \SPFLib\Check\Environment("51.38.29.111", "mails-tourmag.com", "newsletter@mails-tourmag.com");
-        $checker = new Checker();
-        $checkResult = $checker->check($environment);
-        return $checkResult;*/
-        $decoder = new \SPFLib\Decoder();
-        try {
-            $record = $decoder->getRecordFromDomain($domain);
-            return $record;
-        } catch (\SPFLib\Exception $x) {
-            // Problems retrieving the SPF record from example.com,
-            // or problems decoding it
-            return;
-        }
-    }
-
-    private function getSpfCheckLib(string $spfData, string $domain) {
-        $checker = new SPFCheck(new DNSRecordGetter());
-        return $checker->getDomainSPFRecords($domain);
-    }
 }

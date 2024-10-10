@@ -1,0 +1,4 @@
+ii  gnupg                                      2.2.19-3ubuntu2.2                          all          GNU privacy guard - a free PGP replacement
+ii  gnupg-l10n                                 2.2.19-3ubuntu2.2                          all          GNU privacy guard - localization files
+ii  gnupg-utils                                2.2.19-3ubuntu2.2                          amd64        GNU privacy guard - utility programs
+ii  python3-gnupg                              0.4.5-2                                    all          Python wrapper for the GNU Privacy Guard (Python 3.x)
