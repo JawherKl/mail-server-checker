@@ -76,14 +76,6 @@ class MailServerVerificationService
             "DnsServiceProvider" => $this->getDnsServiceProvider($spfData),
             "RelatedLookups" => $this->getDnsLookup($domain)
         ];
-        //var_dump($this->checkSpfSyntax($domain));
-        //var_dump($this->checkIps($domain));
-        //var_dump($this->getDomainHttpsInfo($domain));
-        //var_dump($this->getRecords($domain));
-        //var_dump($this->getDnsPhpChecks($domain));
-        //var_dump($this->getcheckSpfLib($spfData, $domain));
-        //var_dump($this->getSpfCheckLib($spfData, $domain));
-        //var_dump(checkdnsrr($domain, "MX"));
         return $response;
     }
 
