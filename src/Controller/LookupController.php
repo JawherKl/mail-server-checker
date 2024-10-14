@@ -60,4 +60,18 @@ class LookupController extends AbstractController
 
         return new JsonResponse($response);
     }
+
+    #[Route('/api/v1/domains', methods: ['GET'])]
+    public function domains(Request $request): JsonResponse
+    {
+        $argument = $request->query->get('argument');
+        
+        // Check if command and argument are provided
+        if (!$argument) {
+            return new JsonResponse(['error' => 'Missing command or argument'], 400);
+        }
+
+        $response = $this->mailServerVerification->getMailDomainsUnderPrincipal($argument);
+        return new JsonResponse($response);
+    }
 }

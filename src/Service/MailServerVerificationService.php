@@ -8,7 +8,7 @@ use MxToolbox\Exceptions\MxToolboxLogicException;
 use Ramsey\Uuid\Uuid;
 
 use Iodev\Whois\Factory;
-
+use Iodev\Whois\Whois as WhoisWhois;
 use League\Uri\Components\Query;
 use League\Uri\Modifier;
 use League\Uri\Uri;
@@ -2322,4 +2322,92 @@ class MailServerVerificationService
         }
         return null;
     } 
+
+    function getMailDomainsUnderPrincipal(string $principalDomain): array
+    {
+        // Initialize the result array
+        $domains = [];
+
+        //$output = shell_exec('dig +short MX ' . escapeshellarg($principalDomain));
+        /*$output = shell_exec("dig ". $principalDomain ."AAAA 2>&1"); 
+        var_dump(explode("\n", trim($output)));*/
+
+        $whois = Factory::get()->createWhois();;
+        $result = $whois->lookupDomain($principalDomain);
+        //var_dump($result->text);
+
+        // Get DNS records for the principal domain
+        $dnsRecords = dns_get_record($principalDomain, DNS_MX | DNS_A | DNS_CNAME);
+        //var_dump($dnsRecords);
+
+        if (!$dnsRecords) {
+            return ["error" => "No DNS records found for the domain"];
+        }
+
+        // Loop through DNS records to identify MX (Mail Exchange) records
+        foreach ($dnsRecords as $record) {
+            if (isset($record['type'])) {
+                $status = 'inactive';  // Default status
+
+                switch ($record['type']) {
+                    case 'MX':  // MX record: Used for mail exchanges
+                        $mailServer = $record['target'];
+                        
+                        // Check if the SMTP server is active
+                        if ($this->isMailServerActive($mailServer)) {
+                            $status = 'active';
+                        }
+
+                        $domains[] = [
+                            'domain' => $record['host'],
+                            'type' => 'MX',
+                            'priority' => $record['pri'] ?? null,
+                            'status' => $status,
+                            'mail_server' => $mailServer,
+                        ];
+                        break;
+
+                    case 'A':   // A record: Maps a domain to an IP address
+                    case 'CNAME': // CNAME record: Canonical name (alias)
+                        $ipAddress = $record['ip'] ?? $record['target'];
+                        
+                        // Check if the mail server is reachable
+                        if ($this->isMailServerActive($ipAddress)) {
+                            $status = 'active';
+                        }
+
+                        $domains[] = [
+                            'domain' => $record['host'],
+                            'type' => $record['type'],
+                            'ip' => $ipAddress,
+                            'status' => $status,
+                        ];
+                        break;
+
+                    default:
+                        // Handle any other record types if necessary
+                        break;
+                }
+            }
+        }
+
+        return $domains;
+    }
+
+    function isMailServerActive(string $mailServer): bool
+    {
+        $port = 25; // Default SMTP port (can also check 587 or 465 for SMTP over TLS/SSL)
+        $timeout = 5; // Timeout in seconds
+
+        // Attempt to open a connection to the mail server
+        $connection = @fsockopen($mailServer, $port, $errno, $errstr, $timeout);
+
+        if ($connection) {
+            // Close the connection if successful
+            fclose($connection);
+            return true;
+        }
+
+        return false;
+    }
 }
