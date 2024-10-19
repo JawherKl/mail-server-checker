@@ -16,5 +16,5 @@ The **Mail Server Checker** is a PHP new tool designed to analyze and verify the
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/mail-server-checker.git
+   git clone https://github.com/JawherKl/mail-server-checker.git
    ```
